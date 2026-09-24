@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { supabase } from './lib/supabase';
 import FinderDeck from './components/FinderDeck';
+import CommunityForum from './components/CommunityForum';
 import MatchesList from './components/MatchesList';
 import ProfileSettings from './components/ProfileSettings';
 import ActivityTracker from './components/ActivityTracker';
@@ -37,7 +38,9 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
 
   // Navigation State
-  const [activeTab, setActiveTab] = useState<'deck' | 'inbox' | 'track' | 'lapbot' | 'profile'>('deck');
+  const [activeTab, setActiveTab] = useState<
+    'deck' | 'community' | 'inbox' | 'track' | 'lapbot' | 'profile'
+  >('deck');
   const [selectedBuddy, setSelectedBuddy] = useState<any>(null);
 
   useEffect(() => {
@@ -237,6 +240,10 @@ export default function App() {
         >
           {activeTab === 'deck' && <FinderDeck currentUserId={session.user.id} />}
 
+          {activeTab === 'community' && (
+            <CommunityForum currentUserId={session.user.id} />
+          )}
+
           {activeTab === 'inbox' && (
             <MatchesList
               currentUserId={session.user.id}
@@ -263,7 +270,7 @@ export default function App() {
           )}
         </ScrollView>
 
-        {/* Chat Conversation Modal (Only shown when a buddy is selected) */}
+        {/* Chat Conversation Modal */}
         {selectedBuddy && (
           <ChatModal
             buddy={selectedBuddy}
@@ -272,7 +279,7 @@ export default function App() {
           />
         )}
 
-        {/* Minimalist Apple Glass Bottom Dock */}
+        {/* Minimalist Bottom Navigation Dock */}
         <View style={styles.dockWrapper}>
           <View style={styles.dockBar}>
             {/* Deck */}
@@ -290,6 +297,31 @@ export default function App() {
               {activeTab === 'deck' && <View style={styles.activePip} />}
             </TouchableOpacity>
 
+            {/* Forum */}
+            <TouchableOpacity
+              style={styles.dockItem}
+              onPress={() => setActiveTab('community')}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[
+                  styles.dockIcon,
+                  activeTab === 'community' && styles.dockIconActive,
+                ]}
+              >
+                ⊛
+              </Text>
+              <Text
+                style={[
+                  styles.dockLabel,
+                  activeTab === 'community' && styles.dockLabelActive,
+                ]}
+              >
+                FORUM
+              </Text>
+              {activeTab === 'community' && <View style={styles.activePip} />}
+            </TouchableOpacity>
+
             {/* Inbox */}
             <TouchableOpacity
               style={styles.dockItem}
@@ -305,14 +337,14 @@ export default function App() {
               {activeTab === 'inbox' && <View style={styles.activePip} />}
             </TouchableOpacity>
 
-            {/* Track */}
+            {/* Track (Minimalist Geometric Cadence Glyph) */}
             <TouchableOpacity
               style={styles.dockItem}
               onPress={() => setActiveTab('track')}
               activeOpacity={0.7}
             >
               <Text style={[styles.dockIcon, activeTab === 'track' && styles.dockIconActive]}>
-                ⚡
+                ⌁
               </Text>
               <Text style={[styles.dockLabel, activeTab === 'track' && styles.dockLabelActive]}>
                 TRACK
@@ -467,13 +499,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    width: '92%',
+    width: '94%',
     backgroundColor: 'rgba(14, 16, 22, 0.75)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 22,
     paddingVertical: 8,
-    paddingHorizontal: 6,
+    paddingHorizontal: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
@@ -485,10 +517,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     position: 'relative',
     paddingVertical: 3,
-    minWidth: 50,
+    minWidth: 46,
   },
   dockIcon: {
-    fontSize: 15,
+    fontSize: 16,
     color: 'rgba(255, 255, 255, 0.35)',
     marginBottom: 2,
   },
@@ -498,9 +530,9 @@ const styles = StyleSheet.create({
   dockLabel: {
     fontFamily: APPLE_FONT,
     color: 'rgba(255, 255, 255, 0.35)',
-    fontSize: 8.5,
+    fontSize: 8,
     fontWeight: '700',
-    letterSpacing: 0.6,
+    letterSpacing: 0.5,
   },
   dockLabelActive: {
     color: '#FFFFFF',

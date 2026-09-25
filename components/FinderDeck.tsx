@@ -17,7 +17,7 @@ import * as Location from 'expo-location';
 import { supabase } from '../lib/supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const SWIPE_THRESHOLD = 0.28 * SCREEN_WIDTH;
+const SWIPE_THRESHOLD = 0.25 * SCREEN_WIDTH;
 
 const SYSTEM_FONT =
   Platform.OS === 'ios'
@@ -52,66 +52,114 @@ const CATEGORIES = [
   { id: 'GYM', label: 'GYM BUDDY' },
 ];
 
-// Haversine distance formula in kilometers
-function getHaversineDistance(
+function calculateAccurateDistanceKm(
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number
 ): number {
-  const R = 6371; // Radius of Earth in KM
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  if (lat1 === lat2 && lon1 === lon2) return 0;
+  const toRad = (angle: number) => (angle * Math.PI) / 180;
+  const R = 6371.0088;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return parseFloat((R * c).toFixed(1));
+  return Math.round(R * c * 10) / 10;
 }
 
 export default function FinderDeck({ currentUserId }: { currentUserId: string }) {
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [rawProfiles, setRawProfiles] = useState<Profile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedMode, setSelectedMode] = useState('ALL');
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  // GPS Location State
-  const [userCoords, setUserCoords] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [maxDistanceKm, setMaxDistanceKm] = useState(25);
+  // Exact Coordinates
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [userCity, setUserCity] = useState('');
 
-  // Age Filter Range (Minimum 3 years difference enforced)
-  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
+  // Committed Radar Filters
+  const [maxDistanceKm, setMaxDistanceKm] = useState(50);
   const [minAge, setMinAge] = useState(18);
-  const [maxAge, setMaxAge] = useState(32);
+  const [maxAge, setMaxAge] = useState(35);
 
-  // Consistent useNativeDriver animations (no driver conflict crashes)
+  // Temporary State for Smooth In-Modal Dragging
+  const [tempMinAge, setTempMinAge] = useState(18);
+  const [tempMaxAge, setTempMaxAge] = useState(35);
+  const [tempDistance, setTempDistance] = useState(50);
+
+  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
+
+  // Track bar width
+  const SLIDER_WIDTH = 270;
+  const MIN_POSSIBLE_AGE = 18;
+  const MAX_POSSIBLE_AGE = 65;
+
+  // Swipe Animation values
   const pan = useRef(new Animated.ValueXY()).current;
   const cardScale = useRef(new Animated.Value(1)).current;
 
-  // Track GPS on Mount
+  // Sync temp modal filters when opened
   useEffect(() => {
-    (async () => {
+    if (isFilterModalOpen) {
+      setTempMinAge(minAge);
+      setTempMaxAge(maxAge);
+      setTempDistance(maxDistanceKm);
+    }
+  }, [isFilterModalOpen]);
+
+  // Resolve user GPS
+  useEffect(() => {
+    let isMounted = true;
+    async function resolveLocation() {
       try {
+        const { data: myProfile } = await supabase
+          .from('profiles')
+          .select('latitude, longitude, city')
+          .eq('id', currentUserId)
+          .maybeSingle();
+
+        if (myProfile?.latitude && myProfile?.longitude) {
+          if (isMounted) {
+            setUserLocation({
+              latitude: Number(myProfile.latitude),
+              longitude: Number(myProfile.longitude),
+            });
+            if (myProfile.city) setUserCity(myProfile.city);
+          }
+          return;
+        }
+
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
-          const loc = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
-          setUserCoords({
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-          });
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (isMounted) {
+            setUserLocation({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+            });
+            const [geo] = await Location.reverseGeocodeAsync({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+            });
+            if (geo && (geo.city || geo.subregion)) {
+              setUserCity(geo.city || geo.subregion || '');
+            }
+          }
         }
-      } catch {
-        // Fallback default coordinates (Metro Manila Center)
-        setUserCoords({ latitude: 14.5547, longitude: 121.0244 });
+      } catch (err) {
+        console.warn('GPS location resolution error:', err);
       }
-    })();
-  }, []);
+    }
+
+    resolveLocation();
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     setActivePhotoIdx(0);
@@ -124,33 +172,24 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
 
       if (selectedMode !== 'ALL') {
         const modeMap: Record<string, string> = {
-          WALK: 'Walker',
-          RUN: 'RunnerFinder',
-          BIKE: 'Biker',
-          GYM: 'Gym',
+          WALK: 'Walker Finder',
+          RUN: 'Runner Finder',
+          BIKE: 'Biker Finder',
+          GYM: 'Gym Buddy',
         };
-        query = query.eq('fitness_mode', modeMap[selectedMode] || selectedMode);
+        const target = modeMap[selectedMode];
+        if (target) {
+          query = query.or(`fitness_mode.eq.${target},fitness_mode.ilike.%${selectedMode}%`);
+        }
       }
 
       const { data, error } = await query;
-      let matchedList: Profile[] = [];
+      let athletePool: Profile[] = [];
 
       if (!error && data && data.length > 0) {
-        matchedList = data.map((item: any) => {
-          let dist = item.distance ?? 3.5;
-          if (userCoords && item.latitude && item.longitude) {
-            dist = getHaversineDistance(
-              userCoords.latitude,
-              userCoords.longitude,
-              item.latitude,
-              item.longitude
-            );
-          }
-          return { ...item, distance: dist };
-        });
+        athletePool = data;
       } else {
-        // Demo athletes with varied GPS coordinates around Metro Manila
-        matchedList = [
+        athletePool = [
           {
             id: 'mock-bea',
             full_name: 'Bea Valenzuela',
@@ -163,16 +202,13 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
             pace: 'Hypertrophy Focus',
             height: "5'6",
             schedule: 'Late Afternoon',
-            bio: 'Looking for a spotter at Anytime Fitness Ayala Triangle who will not judge me for crying during Romanian deadlifts.',
+            bio: 'Looking for a spotter who will not judge me for crying during Romanian deadlifts.',
             avatar_url:
               'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
             photos: [
               'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
               'https://images.unsplash.com/photo-1517838277536-f5f99be501cd?auto=format&fit=crop&w=1200&q=80',
             ],
-            distance: userCoords
-              ? getHaversineDistance(userCoords.latitude, userCoords.longitude, 14.5547, 121.0244)
-              : 4.2,
           },
           {
             id: 'mock-kyle',
@@ -192,23 +228,32 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
             photos: [
               'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=1200&q=80',
             ],
-            distance: userCoords
-              ? getHaversineDistance(userCoords.latitude, userCoords.longitude, 14.5492, 121.0507)
-              : 2.1,
+          },
+          {
+            id: 'mock-sofia',
+            full_name: 'Sofia Mendoza',
+            age: 23,
+            fitness_mode: 'Walker Finder',
+            dating_status: 'Cardio Over Feelings ⚡',
+            city: 'Quezon City',
+            latitude: 14.6507,
+            longitude: 121.0494,
+            pace: '6.0 km/h Walk',
+            height: "5'4",
+            schedule: '7:00 PM Evenings',
+            bio: 'Sunset walks around UP Diliman Oval to decompress after long days.',
+            avatar_url:
+              'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=1200&q=80',
+            photos: [
+              'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=1200&q=80',
+            ],
           },
         ];
       }
 
-      // Filter by Age Bounds and GPS Max Radius
-      const filtered = matchedList.filter((p) => {
-        const pAge = p.age ?? 24;
-        const pDist = p.distance ?? 0;
-        return pAge >= minAge && pAge <= maxAge && pDist <= maxDistanceKm;
-      });
-
-      setProfiles(filtered);
-    } catch {
-      // Offline fallback
+      setRawProfiles(athletePool);
+    } catch (err) {
+      console.warn('Error fetching profiles:', err);
     } finally {
       setLoading(false);
       setCurrentIndex(0);
@@ -218,56 +263,80 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
 
   useEffect(() => {
     fetchProfiles();
-  }, [selectedMode, minAge, maxAge, maxDistanceKm, userCoords]);
+  }, [selectedMode, userLocation]);
 
-  // UNIFIED ANIMATION RESPONDER (useNativeDriver: false across all calls)
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => false,
-        onMoveShouldSetPanResponder: (_, gestureState) => {
-          return (
-            Math.abs(gestureState.dx) > 10 &&
-            Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
-          );
-        },
-        onPanResponderGrant: () => {
-          Animated.spring(cardScale, {
-            toValue: 0.98,
-            useNativeDriver: false,
-          }).start();
-        },
-        onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
+  // Instant in-memory filter against committed parameters
+  const profiles = useMemo(() => {
+    const mapped = rawProfiles.map((athlete) => {
+      let exactDistance = 999;
+      if (
+        userLocation &&
+        typeof athlete.latitude === 'number' &&
+        typeof athlete.longitude === 'number'
+      ) {
+        exactDistance = calculateAccurateDistanceKm(
+          userLocation.latitude,
+          userLocation.longitude,
+          athlete.latitude,
+          athlete.longitude
+        );
+      } else if (typeof athlete.distance === 'number') {
+        exactDistance = athlete.distance;
+      }
+      return { ...athlete, distance: exactDistance };
+    });
+
+    return mapped
+      .filter((athlete) => {
+        const aAge = athlete.age ?? 24;
+        return aAge >= minAge && aAge <= maxAge && (athlete.distance || 0) <= maxDistanceKm;
+      })
+      .sort((a, b) => (a.distance || 0) - (b.distance || 0));
+  }, [rawProfiles, userLocation, minAge, maxAge, maxDistanceKm]);
+
+  // PanResponder for swiping cards
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 10,
+      onMoveShouldSetPanResponderCapture: (_, gesture) => Math.abs(gesture.dx) > 10,
+      onPanResponderGrant: () => {
+        Animated.spring(cardScale, {
+          toValue: 0.98,
           useNativeDriver: false,
-        }),
-        onPanResponderRelease: (_, gestureState) => {
-          Animated.spring(cardScale, {
-            toValue: 1,
+        }).start();
+      },
+      onPanResponderMove: (_, gesture) => {
+        pan.setValue({ x: gesture.dx, y: gesture.dy * 0.4 });
+      },
+      onPanResponderRelease: (_, gesture) => {
+        Animated.spring(cardScale, {
+          toValue: 1,
+          useNativeDriver: false,
+        }).start();
+
+        if (gesture.dx > SWIPE_THRESHOLD) {
+          triggerSwipe('right');
+        } else if (gesture.dx < -SWIPE_THRESHOLD) {
+          triggerSwipe('left');
+        } else {
+          Animated.spring(pan, {
+            toValue: { x: 0, y: 0 },
+            friction: 5,
+            tension: 50,
             useNativeDriver: false,
           }).start();
-
-          if (gestureState.dx > SWIPE_THRESHOLD) {
-            triggerSwipe('right');
-          } else if (gestureState.dx < -SWIPE_THRESHOLD) {
-            triggerSwipe('left');
-          } else {
-            Animated.spring(pan, {
-              toValue: { x: 0, y: 0 },
-              friction: 6,
-              tension: 60,
-              useNativeDriver: false,
-            }).start();
-          }
-        },
-      }),
-    []
-  );
+        }
+      },
+    })
+  ).current;
 
   const triggerSwipe = (direction: 'left' | 'right') => {
     const xDest = direction === 'right' ? SCREEN_WIDTH + 140 : -SCREEN_WIDTH - 140;
     Animated.timing(pan, {
       toValue: { x: xDest, y: 0 },
-      duration: 220,
+      duration: 200,
       useNativeDriver: false,
     }).start(() => {
       pan.setValue({ x: 0, y: 0 });
@@ -275,7 +344,6 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
     });
   };
 
-  // Interpolations
   const rotateCard = pan.x.interpolate({
     inputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
     outputRange: ['-12deg', '0deg', '12deg'],
@@ -299,23 +367,58 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
     setActivePhotoIdx((prev) => (prev < total - 1 ? prev + 1 : 0));
   };
 
-  const handlePrevPhoto = (total: number) => {
-    setActivePhotoIdx((prev) => (prev > 0 ? prev - 1 : total - 1));
+  // Convert Age to position
+  const getPositionFromAge = (val: number) => {
+    const ratio = (val - MIN_POSSIBLE_AGE) / (MAX_POSSIBLE_AGE - MIN_POSSIBLE_AGE);
+    return Math.max(0, Math.min(SLIDER_WIDTH, ratio * SLIDER_WIDTH));
   };
 
-  // Age Adjusters with Minimum 3-Year Gap
-  const handleMinAgeChange = (delta: number) => {
-    const target = minAge + delta;
-    if (target >= 18 && maxAge - target >= 3) {
-      setMinAge(target);
-    }
-  };
+  // Drag responder references
+  const startDragAgeMin = useRef(minAge);
+  const minThumbPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderGrant: () => {
+          startDragAgeMin.current = tempMinAge;
+        },
+        onPanResponderMove: (_, gestureState) => {
+          const ageDelta = Math.round(
+            (gestureState.dx / SLIDER_WIDTH) * (MAX_POSSIBLE_AGE - MIN_POSSIBLE_AGE)
+          );
+          const computed = startDragAgeMin.current + ageDelta;
+          const clamped = Math.max(MIN_POSSIBLE_AGE, Math.min(tempMaxAge - 3, computed));
+          setTempMinAge(clamped);
+        },
+      }),
+    [tempMaxAge]
+  );
 
-  const handleMaxAgeChange = (delta: number) => {
-    const target = maxAge + delta;
-    if (target <= 65 && target - minAge >= 3) {
-      setMaxAge(target);
-    }
+  const startDragAgeMax = useRef(maxAge);
+  const maxThumbPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onPanResponderGrant: () => {
+          startDragAgeMax.current = tempMaxAge;
+        },
+        onPanResponderMove: (_, gestureState) => {
+          const ageDelta = Math.round(
+            (gestureState.dx / SLIDER_WIDTH) * (MAX_POSSIBLE_AGE - MIN_POSSIBLE_AGE)
+          );
+          const computed = startDragAgeMax.current + ageDelta;
+          const clamped = Math.min(MAX_POSSIBLE_AGE, Math.max(tempMinAge + 3, computed));
+          setTempMaxAge(clamped);
+        },
+      }),
+    [tempMinAge]
+  );
+
+  const handleApplyParameters = () => {
+    setMinAge(tempMinAge);
+    setMaxAge(tempMaxAge);
+    setMaxDistanceKm(tempDistance);
+    setIsFilterModalOpen(false);
   };
 
   if (loading) {
@@ -352,7 +455,6 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
           })}
         </ScrollView>
 
-        {/* Filter Trigger Button */}
         <TouchableOpacity
           style={styles.filterTriggerPill}
           onPress={() => setIsFilterModalOpen(true)}
@@ -360,12 +462,12 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
         >
           <Text style={styles.filterTriggerBolt}>⚡</Text>
           <Text style={styles.filterTriggerText}>
-            {minAge}–{maxAge} • {maxDistanceKm}KM
+            {minAge}–{maxAge} • ≤{maxDistanceKm}KM
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* Discovery Card */}
+      {/* Discovery Deck Card */}
       {currentProfile ? (
         <Animated.View
           {...panResponder.panHandlers}
@@ -381,20 +483,22 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
             },
           ]}
         >
-          {/* Holographic Decision Stamps */}
+          {/* Stamps */}
           <Animated.View
+            pointerEvents="none"
             style={[styles.decisionStamp, styles.stampRight, { opacity: connectOpacity }]}
           >
             <Text style={styles.stampRightText}>CONNECT ⚡</Text>
           </Animated.View>
 
           <Animated.View
+            pointerEvents="none"
             style={[styles.decisionStamp, styles.stampLeft, { opacity: passOpacity }]}
           >
             <Text style={styles.stampLeftText}>PASS ✕</Text>
           </Animated.View>
 
-          {/* Photo Carousel Area */}
+          {/* Photo Viewport */}
           {(() => {
             const photoList =
               currentProfile.photos && currentProfile.photos.length > 0
@@ -409,7 +513,11 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
                 <Image source={{ uri: photoList[activePhotoIdx] }} style={styles.photoImg} />
 
                 {photoList.length > 1 && (
-                  <View style={styles.storyProgressRow}>
+                  <TouchableOpacity
+                    style={styles.storyProgressRow}
+                    activeOpacity={0.8}
+                    onPress={() => handleNextPhoto(photoList.length)}
+                  >
                     {photoList.map((_, i) => (
                       <View
                         key={i}
@@ -419,23 +527,11 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
                         ]}
                       />
                     ))}
-                  </View>
+                  </TouchableOpacity>
                 )}
 
-                {/* Left/Right Story Navigation */}
-                <TouchableOpacity
-                  style={styles.tapLeft}
-                  onPress={() => handlePrevPhoto(photoList.length)}
-                  activeOpacity={1}
-                />
-                <TouchableOpacity
-                  style={styles.tapRight}
-                  onPress={() => handleNextPhoto(photoList.length)}
-                  activeOpacity={1}
-                />
-
                 {/* Overlaid Badges */}
-                <View style={styles.photoOverlayRow}>
+                <View style={styles.photoOverlayRow} pointerEvents="none">
                   <View style={styles.sportBadge}>
                     <Text style={styles.sportBadgeText}>
                       {(currentProfile.fitness_mode || 'ATHLETE').toUpperCase()}
@@ -444,7 +540,9 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
 
                   <View style={styles.distanceBadge}>
                     <Text style={styles.distanceBadgeText}>
-                      {currentProfile.distance ?? 3.5} KM AWAY
+                      {typeof currentProfile.distance === 'number'
+                        ? `${currentProfile.distance} KM AWAY`
+                        : 'NEARBY'}
                     </Text>
                   </View>
                 </View>
@@ -461,7 +559,6 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
               </View>
             </View>
 
-            {/* Dating & Fitness Status */}
             {currentProfile.dating_status ? (
               <View style={styles.statusPill}>
                 <Text style={styles.statusPillText}>{currentProfile.dating_status}</Text>
@@ -473,6 +570,9 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
               <Text style={styles.locationText}>
                 {(currentProfile.city || 'METRO MANILA').toUpperCase()}
               </Text>
+              <View style={styles.verifiedGpsPill}>
+                <Text style={styles.verifiedGpsText}>GPS VERIFIED</Text>
+              </View>
             </View>
 
             {/* Metrics Grid */}
@@ -484,7 +584,7 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
 
               <View style={styles.metricCell}>
                 <Text style={styles.metricLabel}>HEIGHT</Text>
-                <Text style={styles.metricVal}>{currentProfile.height || "5'8"}</Text>
+                <Text style={styles.metricVal}>{currentProfile.height || '—'}</Text>
               </View>
 
               <View style={styles.metricCell}>
@@ -498,25 +598,30 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
               <Text style={styles.bioTitle}>TRAINING ETHOS & GOALS</Text>
               <Text style={styles.bioBody}>
                 {currentProfile.bio ||
-                  'Looking for an accountability partner to lock in paces, share hydration breaks, and get faster together.'}
+                  'Looking for an accountability partner to lock in paces, share hydration breaks, and train together.'}
               </Text>
             </View>
           </View>
         </Animated.View>
       ) : (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>RADAR EXPANDED</Text>
+          <Text style={styles.emptyTitle}>NO ATHLETES WITHIN {maxDistanceKm} KM</Text>
           <Text style={styles.emptySub}>
-            No athletes found matching {minAge}–{maxAge} yrs within {maxDistanceKm} km. Adjust
-            filters to widen your scan.
+            No active athletes match your {maxDistanceKm} km GPS radius and age range. Widen your parameters to see more athletes.
           </Text>
-          <TouchableOpacity style={styles.refreshBtn} onPress={fetchProfiles} activeOpacity={0.8}>
-            <Text style={styles.refreshBtnText}>RE-SCAN RADAR</Text>
+          <TouchableOpacity
+            style={styles.widenRadiusBtn}
+            onPress={() => setMaxDistanceKm((prev) => Math.min(100, prev + 25))}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.widenRadiusBtnText}>
+              + EXPAND RADIUS TO {Math.min(100, maxDistanceKm + 25)} KM
+            </Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* Control Buttons */}
+      {/* Manual Trigger Buttons */}
       {currentProfile && (
         <View style={styles.controlsRow}>
           <TouchableOpacity
@@ -537,7 +642,7 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
         </View>
       )}
 
-      {/* Futuristic Interactive Radar Parameters Sheet */}
+      {/* Lag-Free Dual Slider Radar Parameters Modal */}
       <Modal
         visible={isFilterModalOpen}
         transparent
@@ -546,98 +651,89 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>RADAR PARAMETERS</Text>
-            <Text style={styles.modalSub}>
-              Adjust age limits (min 3-year gap) and GPS radius to track athletes nearby.
-            </Text>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalTitle}>RADAR PARAMETERS</Text>
+              <TouchableOpacity onPress={() => setIsFilterModalOpen(false)}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </TouchableOpacity>
+            </View>
 
-            {/* Minimum Age Slider Stepper */}
-            <View style={styles.sliderControlBlock}>
+            {/* LAG-FREE DUAL SLIDER FOR AGE */}
+            <View style={styles.filterSection}>
               <View style={styles.sliderHeaderRow}>
-                <Text style={styles.sliderLabel}>MINIMUM AGE (18+)</Text>
-                <Text style={styles.sliderValueText}>{minAge} YRS</Text>
+                <Text style={styles.sectionHeading}>ATHLETE AGE RANGE</Text>
+                <Text style={styles.sliderAgeRangeVal}>{tempMinAge} – {tempMaxAge} YRS</Text>
               </View>
-              <View style={styles.stepperRow}>
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => handleMinAgeChange(-1)}
-                >
-                  <Text style={styles.stepperBtnText}>−</Text>
-                </TouchableOpacity>
 
-                <View style={styles.stepperBarBackground}>
-                  <View
-                    style={[
-                      styles.stepperBarFill,
-                      { width: `${((minAge - 18) / (maxAge - 3 - 18 || 1)) * 100}%` },
-                    ]}
-                  />
+              <View style={[styles.sliderTrackContainer, { width: SLIDER_WIDTH }]}>
+                {/* Background Full Track */}
+                <View style={styles.sliderTrackBg} />
+
+                {/* Highlight Active Range Bar */}
+                <View
+                  style={[
+                    styles.sliderTrackActive,
+                    {
+                      left: getPositionFromAge(tempMinAge),
+                      width: Math.max(16, getPositionFromAge(tempMaxAge) - getPositionFromAge(tempMinAge)),
+                    },
+                  ]}
+                />
+
+                {/* Left Thumb (Min Age) */}
+                <View
+                  {...minThumbPanResponder.panHandlers}
+                  style={[
+                    styles.sliderThumb,
+                    styles.sliderThumbMin,
+                    { left: Math.max(0, getPositionFromAge(tempMinAge) - 12) },
+                  ]}
+                >
+                  <View style={styles.thumbDotCyan} />
                 </View>
 
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => handleMinAgeChange(1)}
+                {/* Right Thumb (Max Age) */}
+                <View
+                  {...maxThumbPanResponder.panHandlers}
+                  style={[
+                    styles.sliderThumb,
+                    styles.sliderThumbMax,
+                    { left: Math.max(0, getPositionFromAge(tempMaxAge) - 12) },
+                  ]}
                 >
-                  <Text style={styles.stepperBtnText}>+</Text>
-                </TouchableOpacity>
+                  <View style={styles.thumbDotOrange} />
+                </View>
+              </View>
+
+              {/* Slider scale limits footer */}
+              <View style={[styles.sliderScaleBounds, { width: SLIDER_WIDTH }]}>
+                <Text style={styles.scaleBoundText}>{MIN_POSSIBLE_AGE} YRS</Text>
+                <Text style={styles.scaleGapNotice}>Smooth drag handles (min 3-yr gap)</Text>
+                <Text style={styles.scaleBoundText}>{MAX_POSSIBLE_AGE} YRS</Text>
               </View>
             </View>
 
-            {/* Maximum Age Slider Stepper */}
-            <View style={styles.sliderControlBlock}>
-              <View style={styles.sliderHeaderRow}>
-                <Text style={styles.sliderLabel}>MAXIMUM AGE</Text>
-                <Text style={styles.sliderValueText}>{maxAge} YRS</Text>
+            {/* GPS Radius Limit (up to 100 KM) */}
+            <View style={styles.filterSection}>
+              <View style={styles.radiusHeaderRow}>
+                <Text style={styles.sectionHeading}>GPS PROXIMITY RADIUS</Text>
+                <Text style={styles.radiusValText}>{tempDistance} KM</Text>
               </View>
-              <View style={styles.stepperRow}>
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => handleMaxAgeChange(-1)}
-                >
-                  <Text style={styles.stepperBtnText}>−</Text>
-                </TouchableOpacity>
-
-                <View style={styles.stepperBarBackground}>
-                  <View
-                    style={[
-                      styles.stepperBarFill,
-                      { width: `${((maxAge - (minAge + 3)) / (60 - (minAge + 3))) * 100}%` },
-                    ]}
-                  />
-                </View>
-
-                <TouchableOpacity
-                  style={styles.stepperBtn}
-                  onPress={() => handleMaxAgeChange(1)}
-                >
-                  <Text style={styles.stepperBtnText}>+</Text>
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.sliderNotice}>
-                ⚡ Enforced gap: minimum 3 years between lower and upper bound.
-              </Text>
-            </View>
-
-            {/* GPS Radius Setting */}
-            <View style={styles.sliderControlBlock}>
-              <View style={styles.sliderHeaderRow}>
-                <Text style={styles.sliderLabel}>GPS PROXIMITY RADIUS</Text>
-                <Text style={styles.sliderValueText}>{maxDistanceKm} KM</Text>
-              </View>
-              <View style={styles.radiusOptionsRow}>
-                {[5, 10, 20, 35, 50].map((dist) => (
+              <View style={styles.radiusChipsGrid}>
+                {[5, 15, 25, 50, 75, 100].map((dist) => (
                   <TouchableOpacity
                     key={dist}
                     style={[
-                      styles.radiusChip,
-                      maxDistanceKm === dist && styles.radiusChipActive,
+                      styles.radiusPill,
+                      tempDistance === dist && styles.radiusPillActive,
                     ]}
-                    onPress={() => setMaxDistanceKm(dist)}
+                    onPress={() => setTempDistance(dist)}
+                    activeOpacity={0.8}
                   >
                     <Text
                       style={[
-                        styles.radiusChipText,
-                        maxDistanceKm === dist && styles.radiusChipTextActive,
+                        styles.radiusPillText,
+                        tempDistance === dist && styles.radiusPillTextActive,
                       ]}
                     >
                       {dist} KM
@@ -647,12 +743,12 @@ export default function FinderDeck({ currentUserId }: { currentUserId: string })
               </View>
             </View>
 
-            {/* Close / Apply */}
             <TouchableOpacity
-              style={styles.modalApplyBtn}
-              onPress={() => setIsFilterModalOpen(false)}
+              style={styles.applyBtn}
+              onPress={handleApplyParameters}
+              activeOpacity={0.8}
             >
-              <Text style={styles.modalApplyText}>APPLY RADAR FILTERS</Text>
+              <Text style={styles.applyBtnText}>APPLY PARAMETERS</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -673,7 +769,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  /* CATEGORY & RADAR CONTROLS */
   categoryContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -736,7 +831,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
 
-  /* VELOCITY CARD */
   cardWrapper: {
     width: '100%',
     backgroundColor: 'rgba(15, 20, 32, 0.9)',
@@ -769,6 +863,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     zIndex: 10,
+    paddingVertical: 6,
   },
   storyPip: {
     flex: 1,
@@ -784,22 +879,6 @@ const styles = StyleSheet.create({
   },
   storyPipDim: {
     backgroundColor: 'rgba(255, 255, 255, 0.3)',
-  },
-  tapLeft: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: 0,
-    width: '38%',
-    zIndex: 5,
-  },
-  tapRight: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    right: 0,
-    width: '38%',
-    zIndex: 5,
   },
   photoOverlayRow: {
     position: 'absolute',
@@ -825,9 +904,9 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   distanceBadge: {
-    backgroundColor: 'rgba(3, 7, 18, 0.75)',
+    backgroundColor: 'rgba(3, 7, 18, 0.8)',
     borderWidth: 1,
-    borderColor: 'rgba(0, 240, 255, 0.5)',
+    borderColor: 'rgba(0, 240, 255, 0.55)',
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 10,
@@ -841,7 +920,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  /* DETAILS */
   profileDetails: {
     padding: 20,
     gap: 14,
@@ -900,11 +978,27 @@ const styles = StyleSheet.create({
   },
   locationText: {
     fontFamily: SYSTEM_FONT,
-    color: 'rgba(255, 255, 255, 0.55)',
+    color: 'rgba(255, 255, 255, 0.75)',
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1.2,
   },
+  verifiedGpsPill: {
+    backgroundColor: 'rgba(0, 240, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.35)',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+  },
+  verifiedGpsText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+
   metricsGrid: {
     flexDirection: 'row',
     gap: 10,
@@ -957,7 +1051,6 @@ const styles = StyleSheet.create({
     lineHeight: 21,
   },
 
-  /* DECISION STAMPS */
   decisionStamp: {
     position: 'absolute',
     top: 40,
@@ -994,7 +1087,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
   },
 
-  /* CONTROLS */
   controlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1031,43 +1123,48 @@ const styles = StyleSheet.create({
   },
 
   emptyCard: {
-    paddingVertical: 100,
+    paddingVertical: 90,
     alignItems: 'center',
     gap: 12,
+    paddingHorizontal: 20,
   },
   emptyTitle: {
     fontFamily: SYSTEM_FONT,
     color: '#FFF',
     fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: 1.4,
+    fontWeight: '900',
+    letterSpacing: 1.2,
+    textAlign: 'center',
   },
   emptySub: {
     fontFamily: SYSTEM_FONT,
     color: 'rgba(255, 255, 255, 0.5)',
     fontSize: 13,
     textAlign: 'center',
-    maxWidth: 280,
-    lineHeight: 18,
+    maxWidth: 290,
+    lineHeight: 19,
   },
-  refreshBtn: {
-    marginTop: 10,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: 10,
+  widenRadiusBtn: {
+    marginTop: 8,
+    backgroundColor: 'rgba(0, 240, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: '#00F0FF',
+    paddingVertical: 12,
     paddingHorizontal: 20,
     borderRadius: 14,
   },
-  refreshBtnText: {
+  widenRadiusBtnText: {
     fontFamily: SYSTEM_FONT,
-    color: '#FFF',
+    color: '#00F0FF',
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '900',
+    letterSpacing: 0.8,
   },
 
-  /* RADAR PARAMETERS MODAL */
+  /* MODAL */
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
@@ -1075,16 +1172,21 @@ const styles = StyleSheet.create({
   modalCard: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: 'rgba(16, 22, 34, 0.95)',
+    backgroundColor: 'rgba(16, 22, 34, 0.98)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.14)',
     borderRadius: 26,
     padding: 22,
-    gap: 16,
+    gap: 18,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 16 },
     shadowOpacity: 0.5,
     shadowRadius: 28,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   modalTitle: {
     fontFamily: SYSTEM_FONT,
@@ -1093,108 +1195,156 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1.6,
   },
-  modalSub: {
-    fontFamily: SYSTEM_FONT,
+  modalCloseText: {
     color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 12.5,
-    lineHeight: 18,
+    fontSize: 16,
+    fontWeight: 'bold',
   },
-  sliderControlBlock: {
-    gap: 8,
-    marginTop: 4,
+  filterSection: {
+    gap: 10,
+    alignItems: 'center',
   },
   sliderHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    width: '100%',
   },
-  sliderLabel: {
+  sectionHeading: {
     fontFamily: SYSTEM_FONT,
-    color: 'rgba(255, 255, 255, 0.75)',
-    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: 9.5,
     fontWeight: '800',
-    letterSpacing: 0.8,
+    letterSpacing: 1,
   },
-  sliderValueText: {
+  sliderAgeRangeVal: {
     fontFamily: SYSTEM_FONT,
     color: '#00F0FF',
     fontSize: 14,
     fontWeight: '900',
   },
-  stepperRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+
+  /* DUAL-THUMB SLIDER TRACK */
+  sliderTrackContainer: {
+    height: 36,
+    justifyContent: 'center',
+    position: 'relative',
+    marginVertical: 4,
   },
-  stepperBtn: {
+  sliderTrackBg: {
+    height: 6,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.14)',
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    borderRadius: 3,
+    width: '100%',
+  },
+  sliderTrackActive: {
+    position: 'absolute',
+    height: 6,
+    backgroundColor: '#00F0FF',
+    borderRadius: 3,
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#0D111A',
+    borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.6,
+    shadowRadius: 4,
+    zIndex: 5,
   },
-  stepperBtnText: {
-    color: '#FFF',
-    fontSize: 18,
-    fontWeight: 'bold',
+  sliderThumbMin: {
+    borderColor: '#00F0FF',
   },
-  stepperBarBackground: {
-    flex: 1,
-    height: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 3,
-    overflow: 'hidden',
+  sliderThumbMax: {
+    borderColor: '#FC5200',
   },
-  stepperBarFill: {
-    height: '100%',
+  thumbDotCyan: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: '#00F0FF',
   },
-  sliderNotice: {
-    fontFamily: SYSTEM_FONT,
-    color: 'rgba(255, 255, 255, 0.4)',
-    fontSize: 10.5,
-    lineHeight: 14,
-    marginTop: 2,
+  thumbDotOrange: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FC5200',
   },
-  radiusOptionsRow: {
+  sliderScaleBounds: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  scaleBoundText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.35)',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  scaleGapNotice: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.25)',
+    fontSize: 9,
+    fontStyle: 'italic',
+  },
+
+  /* Radius Section */
+  radiusHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+  },
+  radiusValText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  radiusChipsGrid: {
     flexDirection: 'row',
     gap: 6,
     flexWrap: 'wrap',
-    marginTop: 4,
+    justifyContent: 'center',
   },
-  radiusChip: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  radiusPill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     paddingVertical: 7,
     paddingHorizontal: 11,
     borderRadius: 10,
   },
-  radiusChipActive: {
-    backgroundColor: 'rgba(0, 240, 255, 0.18)',
+  radiusPillActive: {
+    backgroundColor: 'rgba(0, 240, 255, 0.16)',
     borderColor: '#00F0FF',
   },
-  radiusChipText: {
+  radiusPillText: {
     fontFamily: SYSTEM_FONT,
     color: 'rgba(255, 255, 255, 0.65)',
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '700',
   },
-  radiusChipTextActive: {
+  radiusPillTextActive: {
     color: '#00F0FF',
     fontWeight: '900',
   },
-  modalApplyBtn: {
+
+  applyBtn: {
     backgroundColor: '#00F0FF',
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 6,
+    width: '100%',
+    marginTop: 4,
   },
-  modalApplyText: {
+  applyBtnText: {
     fontFamily: SYSTEM_FONT,
     color: '#030812',
     fontSize: 13,

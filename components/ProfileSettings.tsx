@@ -50,19 +50,19 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
   const [locating, setLocating] = useState(false);
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
 
-  // Form Fields
+  // Form Fields - Name is permanent / unchangeable
   const [fullName, setFullName] = useState('');
   const [age, setAge] = useState('24');
   const [gender, setGender] = useState('Male');
   const [datingStatus, setDatingStatus] = useState('Single & Ready to Lap 🏃‍♂️');
   const [fitnessMode, setFitnessMode] = useState('RunnerFinder');
   const [pace, setPace] = useState('5:30 / km');
-  const [height, setHeight] = useState("5'8");
+  const [height, setHeight] = useState(''); // Optional, default empty
   const [schedule, setSchedule] = useState('6:00 AM Mornings');
   const [bio, setBio] = useState('');
 
-  // GPS-locked location details (no manual text editing allowed)
-  const [gpsCity, setGpsCity] = useState('Metro Manila');
+  // Location has NO default; must be synced by tapping refresh
+  const [gpsCity, setGpsCity] = useState('');
   const [gpsCoords, setGpsCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [gpsVerified, setGpsVerified] = useState(false);
 
@@ -72,7 +72,6 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
 
   useEffect(() => {
     fetchProfile();
-    detectDeviceLocation();
   }, []);
 
   const fetchProfile = async () => {
@@ -85,7 +84,12 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
         .single();
 
       if (!error && data) {
-        if (data.full_name) setFullName(data.full_name);
+        // Lock the initial registered name
+        if (data.full_name) {
+          setFullName(data.full_name);
+        } else if (userEmail) {
+          setFullName(userEmail.split('@')[0]);
+        }
         if (data.age) setAge(String(data.age));
         if (data.gender) setGender(data.gender);
         if (data.dating_status) setDatingStatus(data.dating_status);
@@ -104,6 +108,8 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
         } else if (data.avatar_url) {
           setPhotos([data.avatar_url]);
         }
+      } else if (userEmail) {
+        setFullName(userEmail.split('@')[0]);
       }
     } catch {
       // Ignore initial read failure
@@ -112,12 +118,13 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
     }
   };
 
-  // Automatic GPS Location Lock
   const detectDeviceLocation = async () => {
     setLocating(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
+        const msg = 'Location permission is required to detect your location.';
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Permission Denied', msg);
         setLocating(false);
         return;
       }
@@ -142,18 +149,18 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
           geocode.subregion ||
           geocode.district ||
           geocode.region ||
-          'Metro Manila';
+          'Detected Location';
         setGpsCity(found);
         setGpsVerified(true);
       }
     } catch {
-      // Keep existing city
+      const msg = 'Unable to acquire GPS coordinates. Check device location service.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('GPS Error', msg);
     } finally {
       setLocating(false);
     }
   };
 
-  // Direct Phone Photo Library Picker
   const handlePickPhoto = async () => {
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -188,7 +195,6 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
     setActivePhotoIdx(0);
   };
 
-  // Profile Save
   const handleSave = async () => {
     const ageNum = parseInt(age, 10);
     if (isNaN(ageNum) || ageNum < 18) {
@@ -197,37 +203,60 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
       return;
     }
 
+    if (!gpsCity || !gpsCoords) {
+      const msg = 'Please tap REFRESH GPS to verify your location before saving.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Location Required', msg);
+      return;
+    }
+
     setSaving(true);
 
-    const payload: any = {
-      id: currentUserId,
-      full_name: fullName.trim() || userEmail?.split('@')[0] || 'Athlete',
-      age: ageNum,
-      gender,
-      dating_status: datingStatus.trim(),
-      city: gpsCity,
-      latitude: gpsCoords?.latitude ?? 14.5547,
-      longitude: gpsCoords?.longitude ?? 121.0244,
-      fitness_mode: fitnessMode,
-      pace: pace.trim(),
-      height: height.trim(),
-      schedule: schedule.trim(),
-      bio: bio.trim(),
-      photos: photos,
-      avatar_url: photos[0] || null,
-      updated_at: new Date().toISOString(),
-    };
+    try {
+      const safePhotos = photos
+        .filter((p) => typeof p === 'string' && p.trim().length > 0)
+        .map((p) => (p.startsWith('data:') && p.length > 5000 ? p.substring(0, 100) : p))
+        .filter((p) => !p.startsWith('data:'));
 
-    const { error } = await supabase.from('profiles').upsert(payload);
+      const fallbackPhotos =
+        safePhotos.length > 0
+          ? safePhotos
+          : ['https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80'];
 
-    setSaving(false);
+      const payload = {
+        id: currentUserId,
+        full_name: fullName.trim() || userEmail?.split('@')[0] || 'Athlete', // Retains permanent name
+        age: ageNum,
+        gender: gender || 'Athlete',
+        dating_status: datingStatus.trim(),
+        city: gpsCity,
+        latitude: gpsCoords.latitude,
+        longitude: gpsCoords.longitude,
+        fitness_mode: fitnessMode || 'RunnerFinder',
+        pace: pace.trim(),
+        height: height.trim() || null,
+        schedule: schedule.trim(),
+        bio: bio.trim(),
+        photos: fallbackPhotos,
+        avatar_url: fallbackPhotos[0] || null,
+        updated_at: new Date().toISOString(),
+      };
 
-    if (!error) {
-      const msg = 'Profile settings and GPS location updated successfully.';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Saved', msg);
-    } else {
-      const errorMsg = error.message || 'Error updating profile. Please check database permissions.';
-      Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Save Failed', errorMsg);
+      const { error } = await supabase
+        .from('profiles')
+        .upsert(payload, { onConflict: 'id' });
+
+      if (!error) {
+        const msg = 'Profile settings and GPS location updated successfully.';
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Saved', msg);
+      } else {
+        const errorMsg = error.message || 'Error updating profile.';
+        Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Save Failed', errorMsg);
+      }
+    } catch (err: any) {
+      const errorMsg = err.message || 'Network request failed.';
+      Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Error', errorMsg);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -249,13 +278,11 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
         </View>
         <Text style={styles.sectionTitle}>Profile & Showcase</Text>
         <Text style={styles.sectionSub}>
-          Your discovery card is verified through hardware GPS to eliminate fake locations.
+          Athlete identity and hardware GPS are verified to keep the radar authentic.
         </Text>
       </View>
 
-      {/* ------------------------------------------------------------- */}
-      {/* LIVE DISCOVERY CARD PREVIEW                                   */}
-      {/* ------------------------------------------------------------- */}
+      {/* LIVE DISCOVERY CARD PREVIEW */}
       <View style={styles.previewHeaderRow}>
         <Text style={styles.previewLabel}>LIVE DISCOVERY PREVIEW</Text>
         <View style={styles.previewBadge}>
@@ -322,13 +349,17 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
             </View>
           ) : null}
 
-          {/* GPS-Verified Location Line */}
+          {/* Location Line */}
           <View style={styles.locationLine}>
             <Text style={styles.pinIcon}>📍</Text>
-            <Text style={styles.locationText}>{gpsCity.toUpperCase()}</Text>
-            <View style={styles.verifiedGpsPill}>
-              <Text style={styles.verifiedGpsText}>GPS VERIFIED</Text>
-            </View>
+            <Text style={[styles.locationText, !gpsCity && { color: 'rgba(255, 255, 255, 0.35)' }]}>
+              {gpsCity ? gpsCity.toUpperCase() : 'NO GPS LOCATION SYNCED'}
+            </Text>
+            {gpsVerified && (
+              <View style={styles.verifiedGpsPill}>
+                <Text style={styles.verifiedGpsText}>GPS VERIFIED</Text>
+              </View>
+            )}
           </View>
 
           {/* Metrics Grid */}
@@ -340,7 +371,7 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
 
             <View style={styles.metricCell}>
               <Text style={styles.metricLabel}>HEIGHT</Text>
-              <Text style={styles.metricVal}>{height || "5'8"}</Text>
+              <Text style={styles.metricVal}>{height || '—'}</Text>
             </View>
 
             <View style={styles.metricCell}>
@@ -359,21 +390,23 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
         </View>
       </View>
 
-      {/* ------------------------------------------------------------- */}
-      {/* PROFILE SETTINGS FORM                                         */}
-      {/* ------------------------------------------------------------- */}
+      {/* PROFILE SETTINGS FORM */}
       <View style={styles.formContainer}>
         <Text style={styles.formSectionTitle}>PERSONAL & SOCIAL STATUS</Text>
 
+        {/* LOCKED READ-ONLY NAME FIELD */}
         <View style={styles.fieldRow}>
-          <Text style={styles.fieldLabel}>Display Name</Text>
-          <TextInput
-            style={styles.fieldInput}
-            value={fullName}
-            onChangeText={setFullName}
-            placeholder="Athlete Name"
-            placeholderTextColor="rgba(255, 255, 255, 0.3)"
-          />
+          <View style={styles.lockedNameHeader}>
+            <Text style={styles.fieldLabel}>Registered Athlete Name</Text>
+            <View style={styles.lockBadge}>
+              <Text style={styles.lockBadgeIcon}>🔒</Text>
+              <Text style={styles.lockBadgeText}>PERMANENT IDENTITY</Text>
+            </View>
+          </View>
+          <View style={styles.lockedNamePill}>
+            <Text style={styles.lockedNameText}>{fullName || 'Athlete'}</Text>
+            <Text style={styles.lockedNotice}>Cannot be changed to prevent scams</Text>
+          </View>
         </View>
 
         <View style={styles.twoColRow}>
@@ -389,13 +422,14 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
             />
           </View>
 
+          {/* Optional Height Field */}
           <View style={[styles.fieldRow, { flex: 1 }]}>
-            <Text style={styles.fieldLabel}>Height</Text>
+            <Text style={styles.fieldLabel}>Height (Optional)</Text>
             <TextInput
               style={styles.fieldInput}
               value={height}
               onChangeText={setHeight}
-              placeholder="5'8"
+              placeholder="e.g. 5'8 (Optional)"
               placeholderTextColor="rgba(255, 255, 255, 0.3)"
             />
           </View>
@@ -454,13 +488,13 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
           </View>
         </View>
 
-        {/* ANTI-SCAM AUTOMATIC GPS LOCATION (NON-EDITABLE) */}
+        {/* HARDWARE GPS REFRESH BLOCK */}
         <View style={styles.gpsLockBlock}>
           <View style={styles.gpsLockHeader}>
-            <View>
-              <Text style={styles.fieldLabel}>Automatic GPS Location</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.fieldLabel}>GPS Location Verification</Text>
               <Text style={styles.gpsSubNotice}>
-                Locked to device hardware to prevent fake locations and scams.
+                Click the refresh button to acquire your hardware coordinates and set your city.
               </Text>
             </View>
             <TouchableOpacity
@@ -472,7 +506,7 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
               {locating ? (
                 <ActivityIndicator size="small" color="#00F0FF" />
               ) : (
-                <Text style={styles.refreshGpsText}>REFRESH GPS</Text>
+                <Text style={styles.refreshGpsText}>⟳ REFRESH GPS</Text>
               )}
             </TouchableOpacity>
           </View>
@@ -482,15 +516,17 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
               <View
                 style={[
                   styles.gpsPulseDot,
-                  { backgroundColor: gpsVerified ? '#00F0FF' : '#FFB800' },
+                  { backgroundColor: gpsVerified ? '#00F0FF' : '#FF3B30' },
                 ]}
               />
-              <Text style={styles.gpsCityDetectedText}>{gpsCity.toUpperCase()}</Text>
+              <Text style={styles.gpsCityDetectedText}>
+                {gpsCity ? gpsCity.toUpperCase() : 'NO GPS POSITION ACQUIRED'}
+              </Text>
             </View>
             <Text style={styles.gpsCoordsText}>
               {gpsCoords
-                ? `LAT: ${gpsCoords.latitude.toFixed(4)} • LON: ${gpsCoords.longitude.toFixed(4)}`
-                : 'Acquiring satellite lock...'}
+                ? `LAT: ${gpsCoords.latitude.toFixed(4)} • LON: ${gpsCoords.longitude.toFixed(4)} (LOCKED)`
+                : 'Click "REFRESH GPS" to connect to satellite'}
             </Text>
           </View>
         </View>
@@ -910,7 +946,6 @@ const styles = StyleSheet.create({
     lineHeight: 21,
   },
 
-  /* FORM STYLING */
   formContainer: {
     backgroundColor: 'rgba(16, 22, 34, 0.88)',
     borderWidth: 1,
@@ -944,6 +979,59 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
     fontWeight: '700',
   },
+
+  /* LOCKED PERMANENT NAME STYLING */
+  lockedNameHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  lockBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(0, 240, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.3)',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  lockBadgeIcon: {
+    fontSize: 10,
+  },
+  lockBadgeText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  lockedNamePill: {
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  lockedNameText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  lockedNotice: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.35)',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+
   fieldInput: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderWidth: 1,
@@ -961,7 +1049,6 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
 
-  /* GPS LOCK COMPONENT */
   gpsLockBlock: {
     backgroundColor: 'rgba(0, 240, 255, 0.04)',
     borderWidth: 1,
@@ -982,20 +1069,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
     lineHeight: 15,
-    maxWidth: 220,
   },
   refreshGpsBtn: {
     backgroundColor: 'rgba(0, 240, 255, 0.12)',
     borderWidth: 1,
     borderColor: 'rgba(0, 240, 255, 0.4)',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 10,
   },
   refreshGpsText: {
     fontFamily: SYSTEM_FONT,
     color: '#00F0FF',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.8,
   },
@@ -1029,7 +1115,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  /* CHIPS */
   chipsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1082,7 +1167,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 
-  /* THUMBNAILS */
   photoThumbnailsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1143,7 +1227,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
 
-  /* SAVE BUTTON */
   saveBtn: {
     backgroundColor: '#00F0FF',
     borderRadius: 16,

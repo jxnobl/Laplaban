@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -11,6 +11,7 @@ import {
   TextInput,
   ActivityIndicator,
   ScrollView,
+  Animated,
 } from 'react-native';
 import { supabase } from './lib/supabase';
 import FinderDeck from './components/FinderDeck';
@@ -22,8 +23,10 @@ import LapBotModal from './components/LapBotModal';
 import ChatModal from './components/ChatModal';
 
 const APPLE_FONT =
-  Platform.OS === 'web'
-    ? "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif"
+  Platform.OS === 'ios'
+    ? 'SF Pro Text'
+    : Platform.OS === 'web'
+    ? "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', -system-ui, sans-serif"
     : undefined;
 
 export default function App() {
@@ -38,10 +41,28 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(false);
 
   // Navigation State
-  const [activeTab, setActiveTab] = useState<
-    'deck' | 'community' | 'inbox' | 'track' | 'lapbot' | 'profile'
-  >('deck');
+  const [activeTab, setActiveTab] = useState<'deck' | 'community' | 'track' | 'lapbot' | 'profile' | 'inbox'>('deck');
   const [selectedBuddy, setSelectedBuddy] = useState<any>(null);
+
+  // Unread badge pulse animation
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.15,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -80,6 +101,7 @@ export default function App() {
           id: data.user.id,
           full_name: email.split('@')[0],
           fitness_mode: 'RunnerFinder',
+          dating_status: 'Single & Ready to Lap',
           city: 'Metro Manila',
         });
       }
@@ -110,9 +132,7 @@ export default function App() {
     );
   }
 
-  // -------------------------------------------------------------
   // AUTHENTICATION SCREEN
-  // -------------------------------------------------------------
   if (!session) {
     return (
       <SafeAreaView style={styles.container}>
@@ -122,8 +142,8 @@ export default function App() {
             <View style={styles.authLogoRow}>
               <Image source={require('./assets/logo.png')} style={styles.appLogo} />
               <View>
-                <Text style={styles.authBrandTitle}>LAPLABAN</Text>
-                <Text style={styles.authBrandSubtitle}>VELOCITY SOCIAL NETWORK</Text>
+                <Text style={styles.authBrandTitle}>L A P L A B A N</Text>
+                <Text style={styles.authBrandSubtitle}>VELOCITY SOCIAL RADAR</Text>
               </View>
             </View>
 
@@ -131,7 +151,7 @@ export default function App() {
               {isSignUp ? 'Create Athlete Account' : 'Welcome Back'}
             </Text>
             <Text style={styles.authSubheading}>
-              Connect with accountability partners across Metro Manila.
+              Find running partners, gym spotters, and cardio soulmates.
             </Text>
 
             {authError ? (
@@ -177,7 +197,7 @@ export default function App() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <Text style={styles.primaryAuthBtnText}>
-                  {isSignUp ? 'CREATE ATHLETE PROFILE' : 'ENTER RADAR'}
+                  {isSignUp ? 'REGISTER PROFILE' : 'ENTER RADAR'}
                 </Text>
               )}
             </TouchableOpacity>
@@ -192,7 +212,7 @@ export default function App() {
             >
               <Text style={styles.authToggleText}>
                 {isSignUp
-                  ? 'Already have an account? Sign In'
+                  ? 'Already registered? Sign In'
                   : "Don't have an athlete account? Register"}
               </Text>
             </TouchableOpacity>
@@ -202,37 +222,58 @@ export default function App() {
     );
   }
 
-  // -------------------------------------------------------------
-  // MAIN VIEWPORT (PHONE-ALIGNED CONTAINER)
-  // -------------------------------------------------------------
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
 
       <View style={styles.viewportFrame}>
-        {/* Minimalist Top Header */}
+        {/* Top Header with Brand and Top-Right Inbox */}
         <View style={styles.header}>
-          <View style={styles.headerLeft}>
+          <TouchableOpacity
+            style={styles.headerLeft}
+            onPress={() => setActiveTab('deck')}
+            activeOpacity={0.8}
+          >
             <Image source={require('./assets/logo.png')} style={styles.headerLogo} />
             <View>
               <Text style={styles.brandTitle}>LAPLABAN</Text>
               <View style={styles.radarStatusRow}>
                 <View style={styles.radarPulsar} />
-                <Text style={styles.radarStatusText}>METRO MANILA RADAR</Text>
+                <Text style={styles.radarStatusText}>METRO MANILA • ACTIVE</Text>
               </View>
             </View>
-          </View>
-
-          <TouchableOpacity
-            style={styles.disconnectBtn}
-            onPress={handleSignOut}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.disconnectBtnText}>DISCONNECT</Text>
           </TouchableOpacity>
+
+          <View style={styles.headerRight}>
+            {/* Top-Right Inbox Trigger */}
+            <TouchableOpacity
+              style={[
+                styles.headerInboxBtn,
+                activeTab === 'inbox' && styles.headerInboxBtnActive,
+              ]}
+              onPress={() => setActiveTab(activeTab === 'inbox' ? 'deck' : 'inbox')}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.headerInboxIcon, activeTab === 'inbox' && { color: '#00F0FF' }]}>
+                ◎
+              </Text>
+              <Text style={[styles.headerInboxText, activeTab === 'inbox' && { color: '#00F0FF' }]}>
+                INBOX
+              </Text>
+              <Animated.View style={[styles.inboxDot, { transform: [{ scale: pulseAnim }] }]} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.disconnectBtn}
+              onPress={handleSignOut}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.disconnectBtnText}>✕</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Center Content Scroll Body */}
+        {/* Content Body */}
         <ScrollView
           style={styles.mainScrollView}
           contentContainerStyle={styles.mainScrollContent}
@@ -240,15 +281,15 @@ export default function App() {
         >
           {activeTab === 'deck' && <FinderDeck currentUserId={session.user.id} />}
 
-          {activeTab === 'community' && (
-            <CommunityForum currentUserId={session.user.id} />
-          )}
-
           {activeTab === 'inbox' && (
             <MatchesList
               currentUserId={session.user.id}
               onSelectBuddy={(buddy) => setSelectedBuddy(buddy)}
             />
+          )}
+
+          {activeTab === 'community' && (
+            <CommunityForum currentUserId={session.user.id} />
           )}
 
           {activeTab === 'track' && (
@@ -270,7 +311,7 @@ export default function App() {
           )}
         </ScrollView>
 
-        {/* Chat Conversation Modal */}
+        {/* Conversation Modal */}
         {selectedBuddy && (
           <ChatModal
             buddy={selectedBuddy}
@@ -279,7 +320,7 @@ export default function App() {
           />
         )}
 
-        {/* Minimalist Bottom Navigation Dock */}
+        {/* Streamlined Bottom Dock */}
         <View style={styles.dockWrapper}>
           <View style={styles.dockBar}>
             {/* Deck */}
@@ -322,22 +363,7 @@ export default function App() {
               {activeTab === 'community' && <View style={styles.activePip} />}
             </TouchableOpacity>
 
-            {/* Inbox */}
-            <TouchableOpacity
-              style={styles.dockItem}
-              onPress={() => setActiveTab('inbox')}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.dockIcon, activeTab === 'inbox' && styles.dockIconActive]}>
-                ◎
-              </Text>
-              <Text style={[styles.dockLabel, activeTab === 'inbox' && styles.dockLabelActive]}>
-                INBOX
-              </Text>
-              {activeTab === 'inbox' && <View style={styles.activePip} />}
-            </TouchableOpacity>
-
-            {/* Track (Minimalist Geometric Cadence Glyph) */}
+            {/* Track */}
             <TouchableOpacity
               style={styles.dockItem}
               onPress={() => setActiveTab('track')}
@@ -391,18 +417,17 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#090A0F',
+    backgroundColor: '#07080C',
     alignItems: 'center',
     justifyContent: 'center',
   },
   loadingScreen: {
     flex: 1,
-    backgroundColor: '#090A0F',
+    backgroundColor: '#07080C',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
-  /* FIXED-WIDTH APP FRAME FOR ALIGNMENT */
   viewportFrame: {
     flex: 1,
     width: '100%',
@@ -417,11 +442,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-    backgroundColor: 'rgba(10, 12, 18, 0.7)',
+    backgroundColor: 'rgba(10, 12, 18, 0.85)',
     ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
+    zIndex: 50,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -429,22 +455,25 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   headerLogo: {
-    width: 26,
-    height: 26,
+    width: 28,
+    height: 28,
     resizeMode: 'contain',
   },
   brandTitle: {
     fontFamily: APPLE_FONT,
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '900',
-    letterSpacing: 1.2,
+    letterSpacing: 2.4,
+    textShadowColor: 'rgba(0, 240, 255, 0.45)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   radarStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    marginTop: 2,
+    marginTop: 1,
   },
   radarPulsar: {
     width: 5,
@@ -455,37 +484,76 @@ const styles = StyleSheet.create({
   radarStatusText: {
     fontFamily: APPLE_FONT,
     color: 'rgba(255, 255, 255, 0.45)',
-    fontSize: 8.5,
-    fontWeight: '700',
+    fontSize: 8,
+    fontWeight: '800',
     letterSpacing: 0.8,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerInboxBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    position: 'relative',
+  },
+  headerInboxBtnActive: {
+    backgroundColor: 'rgba(0, 240, 255, 0.12)',
+    borderColor: 'rgba(0, 240, 255, 0.4)',
+  },
+  headerInboxIcon: {
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 12,
+  },
+  headerInboxText: {
+    fontFamily: APPLE_FONT,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  inboxDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FF3B30',
   },
   disconnectBtn: {
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   disconnectBtnText: {
     fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.55)',
-    fontSize: 8.5,
+    color: 'rgba(255, 255, 255, 0.4)',
+    fontSize: 11,
     fontWeight: '700',
-    letterSpacing: 0.8,
   },
 
-  /* MAIN SCROLL VIEWPORT */
+  /* BODY */
   mainScrollView: {
     flex: 1,
     width: '100%',
   },
   mainScrollContent: {
-    padding: 14,
+    padding: 12,
     paddingBottom: 95,
   },
 
-  /* MINIMALIST BOTTOM DOCK */
+  /* DOCK */
   dockWrapper: {
     position: 'absolute',
     bottom: 12,
@@ -499,17 +567,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    width: '94%',
-    backgroundColor: 'rgba(14, 16, 22, 0.75)',
+    width: '92%',
+    backgroundColor: 'rgba(12, 14, 20, 0.85)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 22,
+    borderRadius: 24,
     paddingVertical: 8,
-    paddingHorizontal: 4,
+    paddingHorizontal: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 24,
     ...(Platform.OS === 'web' ? { backdropFilter: 'blur(30px)' } : {}),
   },
   dockItem: {
@@ -517,7 +585,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     position: 'relative',
     paddingVertical: 3,
-    minWidth: 46,
+    minWidth: 50,
   },
   dockIcon: {
     fontSize: 16,
@@ -532,7 +600,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.35)',
     fontSize: 8,
     fontWeight: '700',
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
   },
   dockLabelActive: {
     color: '#FFFFFF',
@@ -547,7 +615,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FF3B30',
   },
 
-  /* AUTH STYLES */
+  /* AUTH */
   authWrapper: {
     flex: 1,
     justifyContent: 'center',
@@ -558,7 +626,7 @@ const styles = StyleSheet.create({
   authGlassCard: {
     width: '100%',
     maxWidth: 380,
-    backgroundColor: 'rgba(16, 18, 25, 0.75)',
+    backgroundColor: 'rgba(16, 18, 25, 0.8)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 24,
@@ -579,9 +647,9 @@ const styles = StyleSheet.create({
   authBrandTitle: {
     fontFamily: APPLE_FONT,
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '900',
-    letterSpacing: 1.5,
+    letterSpacing: 2,
   },
   authBrandSubtitle: {
     fontFamily: APPLE_FONT,
@@ -637,7 +705,7 @@ const styles = StyleSheet.create({
   authInputLabel: {
     fontFamily: APPLE_FONT,
     color: 'rgba(255, 255, 255, 0.55)',
-    fontSize: 12.5,
+    fontSize: 12,
     width: 75,
     fontWeight: '500',
   },
@@ -645,7 +713,7 @@ const styles = StyleSheet.create({
     fontFamily: APPLE_FONT,
     flex: 1,
     color: '#FFF',
-    fontSize: 12.5,
+    fontSize: 12,
     padding: 0,
   },
   authDivider: {

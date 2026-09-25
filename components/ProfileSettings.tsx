@@ -1,1119 +1,1165 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
+  StyleSheet,
   View,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  ScrollView,
   Image,
+  ActivityIndicator,
   Platform,
-  Animated,
+  Alert,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { supabase } from '../lib/supabase';
+
+const SYSTEM_FONT =
+  Platform.OS === 'ios'
+    ? 'SF Pro Display'
+    : Platform.OS === 'web'
+    ? "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif"
+    : undefined;
 
 interface ProfileSettingsProps {
   currentUserId: string;
-  userEmail: string;
-  onProfileUpdated?: () => void;
+  userEmail?: string;
 }
 
-const MODES = [
-  { key: 'WalkerFinder', label: 'Walker', defaultPace: 'Casual (5-6 km/h)' },
-  { key: 'RunnerFinder', label: 'Runner', defaultPace: '5:30 min/km' },
-  { key: 'BikerFinder', label: 'Biker', defaultPace: '22-25 km/h' },
-  { key: 'GymFinder', label: 'Gym', defaultPace: 'Strength / Hypertrophy' },
+const FITNESS_MODES = [
+  { id: 'RunnerFinder', label: 'Runner Finder' },
+  { id: 'Gym', label: 'Gym Buddy' },
+  { id: 'Biker', label: 'Biker Finder' },
+  { id: 'Walker', label: 'Walker Finder' },
 ];
 
-const TIME_PREFERENCES = ['Early Morning', 'Late Afternoon', 'Night Owl', 'Flexible'];
-const FREQUENCY_OPTIONS = ['1-2x / week', '3-4x / week', '5+ times / week', 'Weekends'];
+const GENDERS = ['Male', 'Female', 'Non-Binary', 'Prefer not to say'];
 
-const APPLE_FONT =
-  Platform.OS === 'web'
-    ? "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', sans-serif"
-    : undefined;
+const PRESET_STATUSES = [
+  'Single & Ready to Lap 🏃‍♂️',
+  'Cardio Over Feelings ⚡',
+  'Looking for a Pacing Partner',
+  'Leg Day Survivor 🏋️‍♀️',
+  'Training for 21K 🏁',
+  'Morning Runs & Iced Pocari 🧊',
+];
 
-export default function ProfileSettings({
-  currentUserId,
-  userEmail,
-  onProfileUpdated,
-}: ProfileSettingsProps) {
-  const [fullName, setFullName] = useState('');
-  const [age, setAge] = useState('');
-  const [height, setHeight] = useState('');
-  const [fitnessMode, setFitnessMode] = useState('RunnerFinder');
-  const [pace, setPace] = useState('');
-  const [city, setCity] = useState('');
-  const [workoutTime, setWorkoutTime] = useState('Early Morning');
-  const [workoutFreq, setWorkoutFreq] = useState('3-4x / week');
-  const [bio, setBio] = useState('');
-  const [photos, setPhotos] = useState<string[]>(['', '', '']);
-
+export default function ProfileSettings({ currentUserId, userEmail }: ProfileSettingsProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
-  const [activePreviewPhotoIdx, setActivePreviewPhotoIdx] = useState(0);
+  const [locating, setLocating] = useState(false);
+  const [activePhotoIdx, setActivePhotoIdx] = useState(0);
 
-  // Animated view transition between showcase and editing
-  const fadeAnim = useRef(new Animated.Value(1)).current;
-  const slideAnim = useRef(new Animated.Value(0)).current;
+  // Form Fields
+  const [fullName, setFullName] = useState('');
+  const [age, setAge] = useState('24');
+  const [gender, setGender] = useState('Male');
+  const [datingStatus, setDatingStatus] = useState('Single & Ready to Lap 🏃‍♂️');
+  const [fitnessMode, setFitnessMode] = useState('RunnerFinder');
+  const [pace, setPace] = useState('5:30 / km');
+  const [height, setHeight] = useState("5'8");
+  const [schedule, setSchedule] = useState('6:00 AM Mornings');
+  const [bio, setBio] = useState('');
 
-  const triggerTransition = (toEditMode: boolean) => {
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 160,
-        useNativeDriver: false,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: toEditMode ? -15 : 15,
-        duration: 160,
-        useNativeDriver: false,
-      }),
-    ]).start(() => {
-      setIsEditing(toEditMode);
-      slideAnim.setValue(toEditMode ? 15 : -15);
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 220,
-          useNativeDriver: false,
-        }),
-        Animated.spring(slideAnim, {
-          toValue: 0,
-          friction: 8,
-          tension: 50,
-          useNativeDriver: false,
-        }),
-      ]).start();
-    });
-  };
+  // GPS-locked location details (no manual text editing allowed)
+  const [gpsCity, setGpsCity] = useState('Metro Manila');
+  const [gpsCoords, setGpsCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [gpsVerified, setGpsVerified] = useState(false);
 
-  const loadProfile = async () => {
-    setLoading(true);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', currentUserId)
-      .single();
-
-    if (!error && data) {
-      setFullName(data.full_name || '');
-      setAge(data.age ? String(data.age) : '');
-      setHeight(data.height || '');
-      setFitnessMode(data.fitness_mode || 'RunnerFinder');
-      setPace(data.pace || '');
-      setCity(data.city || 'Metro Manila');
-      setWorkoutTime(data.workout_time || 'Early Morning');
-      setWorkoutFreq(data.workout_frequency || '3-4x / week');
-      setBio(data.bio || '');
-
-      const existingPhotos = data.photos || [];
-      setPhotos([
-        existingPhotos[0] || '',
-        existingPhotos[1] || '',
-        existingPhotos[2] || '',
-      ]);
-
-      if (data.full_name && data.age) {
-        setIsEditing(false);
-      } else {
-        setIsEditing(true);
-      }
-    } else {
-      setIsEditing(true);
-    }
-    setLoading(false);
-  };
+  const [photos, setPhotos] = useState<string[]>([
+    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
+  ]);
 
   useEffect(() => {
-    loadProfile();
-  }, [currentUserId]);
+    fetchProfile();
+    detectDeviceLocation();
+  }, []);
 
-  const handlePhotoUpload = (slotIndex: number) => {
-    if (Platform.OS === 'web') {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.onchange = (e: any) => {
-        const file = e.target.files?.[0];
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = (uploadEvent) => {
-            const result = uploadEvent.target?.result as string;
-            if (result) {
-              const updated = [...photos];
-              updated[slotIndex] = result;
-              setPhotos(updated);
-            }
-          };
-          reader.readAsDataURL(file);
+  const fetchProfile = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', currentUserId)
+        .single();
+
+      if (!error && data) {
+        if (data.full_name) setFullName(data.full_name);
+        if (data.age) setAge(String(data.age));
+        if (data.gender) setGender(data.gender);
+        if (data.dating_status) setDatingStatus(data.dating_status);
+        if (data.city) setGpsCity(data.city);
+        if (data.latitude && data.longitude) {
+          setGpsCoords({ latitude: data.latitude, longitude: data.longitude });
+          setGpsVerified(true);
         }
-      };
-      input.click();
+        if (data.fitness_mode) setFitnessMode(data.fitness_mode);
+        if (data.pace) setPace(data.pace);
+        if (data.height) setHeight(data.height);
+        if (data.schedule) setSchedule(data.schedule);
+        if (data.bio) setBio(data.bio);
+        if (Array.isArray(data.photos) && data.photos.length > 0) {
+          setPhotos(data.photos);
+        } else if (data.avatar_url) {
+          setPhotos([data.avatar_url]);
+        }
+      }
+    } catch {
+      // Ignore initial read failure
+    } finally {
+      setLoading(false);
     }
   };
 
-  const removePhoto = (slotIndex: number) => {
-    const updated = [...photos];
-    updated[slotIndex] = '';
-    setPhotos(updated);
+  // Automatic GPS Location Lock
+  const detectDeviceLocation = async () => {
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setLocating(false);
+        return;
+      }
+
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      setGpsCoords({
+        latitude: loc.coords.latitude,
+        longitude: loc.coords.longitude,
+      });
+
+      const [geocode] = await Location.reverseGeocodeAsync({
+        latitude: loc.coords.latitude,
+        longitude: loc.coords.longitude,
+      });
+
+      if (geocode) {
+        const found =
+          geocode.city ||
+          geocode.subregion ||
+          geocode.district ||
+          geocode.region ||
+          'Metro Manila';
+        setGpsCity(found);
+        setGpsVerified(true);
+      }
+    } catch {
+      // Keep existing city
+    } finally {
+      setLocating(false);
+    }
   };
 
-  const handleSave = async () => {
-    if (!fullName.trim()) {
-      setStatusMessage('Please enter your name.');
+  // Direct Phone Photo Library Picker
+  const handlePickPhoto = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        const msg = 'Photos permission is required to add showcase images.';
+        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Permission Denied', msg);
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 5],
+        quality: 0.85,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]?.uri) {
+        setPhotos((prev) => [...prev, result.assets[0].uri]);
+      }
+    } catch {
+      // Pick canceled
+    }
+  };
+
+  const handleRemovePhoto = (index: number) => {
+    if (photos.length <= 1) {
+      const msg = 'Your discovery card requires at least one photo.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Required', msg);
       return;
     }
+    setPhotos(photos.filter((_, i) => i !== index));
+    setActivePhotoIdx(0);
+  };
 
-    const parsedAge = parseInt(age, 10);
-    if (!age.trim() || isNaN(parsedAge) || parsedAge < 18) {
-      setStatusMessage('Please enter a valid age (18+ required).');
+  // Profile Save
+  const handleSave = async () => {
+    const ageNum = parseInt(age, 10);
+    if (isNaN(ageNum) || ageNum < 18) {
+      const msg = 'Laplaban requires all athletes to be 18 years or older.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Invalid Age', msg);
       return;
     }
 
     setSaving(true);
-    setStatusMessage('');
 
-    const validPhotos = photos.map((p) => p.trim()).filter((p) => p.length > 0);
-
-    const { error } = await supabase.from('profiles').upsert({
+    const payload: any = {
       id: currentUserId,
-      full_name: fullName.trim(),
-      age: parsedAge,
-      height: height.trim(),
+      full_name: fullName.trim() || userEmail?.split('@')[0] || 'Athlete',
+      age: ageNum,
+      gender,
+      dating_status: datingStatus.trim(),
+      city: gpsCity,
+      latitude: gpsCoords?.latitude ?? 14.5547,
+      longitude: gpsCoords?.longitude ?? 121.0244,
       fitness_mode: fitnessMode,
       pace: pace.trim(),
-      city: city.trim(),
-      workout_time: workoutTime,
-      workout_frequency: workoutFreq,
+      height: height.trim(),
+      schedule: schedule.trim(),
       bio: bio.trim(),
-      photos: validPhotos,
-    });
+      photos: photos,
+      avatar_url: photos[0] || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase.from('profiles').upsert(payload);
 
     setSaving(false);
 
-    if (error) {
-      setStatusMessage(`Error: ${error.message}`);
+    if (!error) {
+      const msg = 'Profile settings and GPS location updated successfully.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Saved', msg);
     } else {
-      setActivePreviewPhotoIdx(0);
-      if (onProfileUpdated) onProfileUpdated();
-      triggerTransition(false);
+      const errorMsg = error.message || 'Error updating profile. Please check database permissions.';
+      Platform.OS === 'web' ? window.alert(errorMsg) : Alert.alert('Save Failed', errorMsg);
     }
   };
 
   if (loading) {
     return (
-      <View style={styles.centerBox}>
-        <ActivityIndicator size="small" color="#FF3B30" />
-        <Text style={styles.loadingText}>Loading Profile...</Text>
+      <View style={styles.loadingBox}>
+        <ActivityIndicator color="#00F0FF" size="large" />
       </View>
     );
   }
 
-  const validPhotosList = photos.filter((p) => Boolean(p.trim()));
-
   return (
-    <ScrollView
-      style={styles.glassContainer}
-      contentContainerStyle={styles.contentContainer}
-      showsVerticalScrollIndicator={false}
-    >
-      <Animated.View
-        style={{
-          opacity: fadeAnim,
-          transform: [{ translateY: slideAnim }],
-        }}
-      >
-        {/* ========================================================= */}
-        {/* VIEW 1: READ-ONLY SHOWCASE CARD                           */}
-        {/* ========================================================= */}
-        {!isEditing ? (
-          <View style={styles.previewContainer}>
-            {/* Header with Edit Button */}
-            <View style={styles.previewHeader}>
-              <View>
-                <Text style={styles.title}>{fullName}</Text>
-                <Text style={styles.subtitle}>{userEmail}</Text>
-              </View>
+    <View style={styles.container}>
+      {/* SECTION HEADER */}
+      <View style={styles.headerBlock}>
+        <View style={styles.radarKickerRow}>
+          <View style={styles.kickerDot} />
+          <Text style={styles.sectionKicker}>RADAR IDENTITY</Text>
+        </View>
+        <Text style={styles.sectionTitle}>Profile & Showcase</Text>
+        <Text style={styles.sectionSub}>
+          Your discovery card is verified through hardware GPS to eliminate fake locations.
+        </Text>
+      </View>
+
+      {/* ------------------------------------------------------------- */}
+      {/* LIVE DISCOVERY CARD PREVIEW                                   */}
+      {/* ------------------------------------------------------------- */}
+      <View style={styles.previewHeaderRow}>
+        <Text style={styles.previewLabel}>LIVE DISCOVERY PREVIEW</Text>
+        <View style={styles.previewBadge}>
+          <Text style={styles.previewBadgeText}>SHOWCASE VIEW</Text>
+        </View>
+      </View>
+
+      <View style={styles.cardWrapper}>
+        <View style={styles.photoViewport}>
+          <Image source={{ uri: photos[activePhotoIdx] }} style={styles.photoImg} />
+
+          {photos.length > 1 && (
+            <View style={styles.storyProgressRow}>
+              {photos.map((_, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.storyPip,
+                    i === activePhotoIdx ? styles.storyPipActive : styles.storyPipDim,
+                  ]}
+                />
+              ))}
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={styles.tapLeft}
+            onPress={() =>
+              setActivePhotoIdx((prev) => (prev > 0 ? prev - 1 : photos.length - 1))
+            }
+            activeOpacity={1}
+          />
+          <TouchableOpacity
+            style={styles.tapRight}
+            onPress={() =>
+              setActivePhotoIdx((prev) => (prev < photos.length - 1 ? prev + 1 : 0))
+            }
+            activeOpacity={1}
+          />
+
+          <View style={styles.photoOverlayRow}>
+            <View style={styles.sportBadge}>
+              <Text style={styles.sportBadgeText}>{fitnessMode.toUpperCase()}</Text>
+            </View>
+
+            <View style={styles.distanceBadge}>
+              <Text style={styles.distanceBadgeText}>YOU (PREVIEW)</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Card Shelf */}
+        <View style={styles.profileDetails}>
+          <View style={styles.nameRow}>
+            <Text style={styles.athleteName}>{fullName || 'Athlete Name'}</Text>
+            <View style={styles.ageBubble}>
+              <Text style={styles.ageText}>{age} YRS • {gender.toUpperCase()}</Text>
+            </View>
+          </View>
+
+          {datingStatus ? (
+            <View style={styles.statusPill}>
+              <Text style={styles.statusPillText}>{datingStatus}</Text>
+            </View>
+          ) : null}
+
+          {/* GPS-Verified Location Line */}
+          <View style={styles.locationLine}>
+            <Text style={styles.pinIcon}>📍</Text>
+            <Text style={styles.locationText}>{gpsCity.toUpperCase()}</Text>
+            <View style={styles.verifiedGpsPill}>
+              <Text style={styles.verifiedGpsText}>GPS VERIFIED</Text>
+            </View>
+          </View>
+
+          {/* Metrics Grid */}
+          <View style={styles.metricsGrid}>
+            <View style={styles.metricCell}>
+              <Text style={styles.metricLabel}>PACE / FOCUS</Text>
+              <Text style={styles.metricVal}>{pace || '5:30 / km'}</Text>
+            </View>
+
+            <View style={styles.metricCell}>
+              <Text style={styles.metricLabel}>HEIGHT</Text>
+              <Text style={styles.metricVal}>{height || "5'8"}</Text>
+            </View>
+
+            <View style={styles.metricCell}>
+              <Text style={styles.metricLabel}>SCHEDULE</Text>
+              <Text style={styles.metricVal}>{schedule || 'Mornings'}</Text>
+            </View>
+          </View>
+
+          <View style={styles.bioCard}>
+            <Text style={styles.bioTitle}>TRAINING ETHOS & GOALS</Text>
+            <Text style={styles.bioBody}>
+              {bio ||
+                'Consistency over intensity. Looking for someone to match cadences and stay accountable.'}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* ------------------------------------------------------------- */}
+      {/* PROFILE SETTINGS FORM                                         */}
+      {/* ------------------------------------------------------------- */}
+      <View style={styles.formContainer}>
+        <Text style={styles.formSectionTitle}>PERSONAL & SOCIAL STATUS</Text>
+
+        <View style={styles.fieldRow}>
+          <Text style={styles.fieldLabel}>Display Name</Text>
+          <TextInput
+            style={styles.fieldInput}
+            value={fullName}
+            onChangeText={setFullName}
+            placeholder="Athlete Name"
+            placeholderTextColor="rgba(255, 255, 255, 0.3)"
+          />
+        </View>
+
+        <View style={styles.twoColRow}>
+          <View style={[styles.fieldRow, { flex: 1 }]}>
+            <Text style={styles.fieldLabel}>Age (18+)</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={age}
+              onChangeText={setAge}
+              keyboardType="number-pad"
+              placeholder="24"
+              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            />
+          </View>
+
+          <View style={[styles.fieldRow, { flex: 1 }]}>
+            <Text style={styles.fieldLabel}>Height</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={height}
+              onChangeText={setHeight}
+              placeholder="5'8"
+              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            />
+          </View>
+        </View>
+
+        {/* Gender Selection */}
+        <View style={styles.fieldRow}>
+          <Text style={styles.fieldLabel}>Gender</Text>
+          <View style={styles.chipsContainer}>
+            {GENDERS.map((g) => (
               <TouchableOpacity
-                style={styles.editActionBtn}
-                onPress={() => triggerTransition(true)}
-                activeOpacity={0.75}
+                key={g}
+                style={[styles.chip, gender === g && styles.chipActive]}
+                onPress={() => setGender(g)}
+                activeOpacity={0.7}
               >
-                <Text style={styles.editActionIcon}>✎</Text>
-                <Text style={styles.editActionText}>Edit</Text>
+                <Text style={[styles.chipText, gender === g && styles.chipTextActive]}>
+                  {g}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* Dating & Fitness Status */}
+        <View style={styles.fieldRow}>
+          <Text style={styles.fieldLabel}>Dating & Fitness Status</Text>
+          <TextInput
+            style={styles.fieldInput}
+            value={datingStatus}
+            onChangeText={setDatingStatus}
+            placeholder="Add your status"
+            placeholderTextColor="rgba(255, 255, 255, 0.3)"
+          />
+          <View style={styles.chipsContainer}>
+            {PRESET_STATUSES.map((status, idx) => (
+              <TouchableOpacity
+                key={idx}
+                style={[
+                  styles.statusChip,
+                  datingStatus === status && styles.statusChipActive,
+                ]}
+                onPress={() => setDatingStatus(status)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.statusChipText,
+                    datingStatus === status && styles.statusChipTextActive,
+                  ]}
+                >
+                  {status}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* ANTI-SCAM AUTOMATIC GPS LOCATION (NON-EDITABLE) */}
+        <View style={styles.gpsLockBlock}>
+          <View style={styles.gpsLockHeader}>
+            <View>
+              <Text style={styles.fieldLabel}>Automatic GPS Location</Text>
+              <Text style={styles.gpsSubNotice}>
+                Locked to device hardware to prevent fake locations and scams.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.refreshGpsBtn}
+              onPress={detectDeviceLocation}
+              disabled={locating}
+              activeOpacity={0.7}
+            >
+              {locating ? (
+                <ActivityIndicator size="small" color="#00F0FF" />
+              ) : (
+                <Text style={styles.refreshGpsText}>REFRESH GPS</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.gpsStatusDisplay}>
+            <View style={styles.gpsIndicatorRow}>
+              <View
+                style={[
+                  styles.gpsPulseDot,
+                  { backgroundColor: gpsVerified ? '#00F0FF' : '#FFB800' },
+                ]}
+              />
+              <Text style={styles.gpsCityDetectedText}>{gpsCity.toUpperCase()}</Text>
+            </View>
+            <Text style={styles.gpsCoordsText}>
+              {gpsCoords
+                ? `LAT: ${gpsCoords.latitude.toFixed(4)} • LON: ${gpsCoords.longitude.toFixed(4)}`
+                : 'Acquiring satellite lock...'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Fitness Discipline & Schedule */}
+        <Text style={[styles.formSectionTitle, { marginTop: 18 }]}>
+          FITNESS METRICS
+        </Text>
+
+        <View style={styles.fieldRow}>
+          <Text style={styles.fieldLabel}>Primary Discipline</Text>
+          <View style={styles.chipsContainer}>
+            {FITNESS_MODES.map((mode) => (
+              <TouchableOpacity
+                key={mode.id}
+                style={[styles.chip, fitnessMode === mode.id && styles.chipActive]}
+                onPress={() => setFitnessMode(mode.id)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    fitnessMode === mode.id && styles.chipTextActive,
+                  ]}
+                >
+                  {mode.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.twoColRow}>
+          <View style={[styles.fieldRow, { flex: 1 }]}>
+            <Text style={styles.fieldLabel}>Pace / Athletic Goal</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={pace}
+              onChangeText={setPace}
+              placeholder="e.g. 5:15 / km"
+              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            />
+          </View>
+
+          <View style={[styles.fieldRow, { flex: 1 }]}>
+            <Text style={styles.fieldLabel}>Active Schedule</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={schedule}
+              onChangeText={setSchedule}
+              placeholder="e.g. 6:00 AM Mornings"
+              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            />
+          </View>
+        </View>
+
+        <View style={styles.fieldRow}>
+          <Text style={styles.fieldLabel}>Bio & Training Ethos</Text>
+          <TextInput
+            style={[styles.fieldInput, styles.bioInput]}
+            value={bio}
+            onChangeText={setBio}
+            placeholder="What keeps you moving? Looking for friendly pacing or athletic accountability?"
+            placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            multiline
+            numberOfLines={4}
+          />
+        </View>
+
+        {/* Photos */}
+        <Text style={[styles.formSectionTitle, { marginTop: 18 }]}>
+          SHOWCASE PHOTOS
+        </Text>
+
+        <View style={styles.photoThumbnailsRow}>
+          {photos.map((pUrl, idx) => (
+            <View key={idx} style={styles.thumbWrapper}>
+              <Image source={{ uri: pUrl }} style={styles.thumbImg} />
+              <TouchableOpacity
+                style={styles.deletePhotoBtn}
+                onPress={() => handleRemovePhoto(idx)}
+              >
+                <Text style={styles.deletePhotoText}>✕</Text>
               </TouchableOpacity>
             </View>
+          ))}
 
-            {/* Interactive Photo Carousel Viewport */}
-            <View style={styles.showcasePhotoViewport}>
-              {validPhotosList.length > 0 ? (
-                <Image
-                  source={{
-                    uri: validPhotosList[activePreviewPhotoIdx] || validPhotosList[0],
-                  }}
-                  style={styles.showcaseMainPhoto}
-                />
-              ) : (
-                <View style={styles.emptyShowcasePhoto}>
-                  <Text style={styles.emptyPhotoIcon}>📸</Text>
-                  <Text style={styles.emptyPhotoText}>No profile photo uploaded</Text>
-                </View>
-              )}
+          <TouchableOpacity
+            style={styles.uploadCardBtn}
+            onPress={handlePickPhoto}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.uploadIcon}>+</Text>
+            <Text style={styles.uploadLabel}>ADD PHOTO</Text>
+          </TouchableOpacity>
+        </View>
 
-              {/* Progress Indicator Bars (Top) */}
-              {validPhotosList.length > 1 && (
-                <View style={styles.photoDotsRow}>
-                  {validPhotosList.map((_, i) => (
-                    <TouchableOpacity
-                      key={i}
-                      style={[
-                        styles.photoDot,
-                        i === activePreviewPhotoIdx && styles.photoDotActive,
-                      ]}
-                      onPress={() => setActivePreviewPhotoIdx(i)}
-                      activeOpacity={0.8}
-                    />
-                  ))}
-                </View>
-              )}
-
-              {/* Left / Right Interactive Tap Zones */}
-              {validPhotosList.length > 1 && (
-                <View style={styles.tapHitboxLayer}>
-                  {/* Left Tap -> Previous Photo */}
-                  <TouchableOpacity
-                    style={styles.tapSide}
-                    activeOpacity={1}
-                    onPress={() =>
-                      setActivePreviewPhotoIdx((prev) =>
-                        prev > 0 ? prev - 1 : validPhotosList.length - 1
-                      )
-                    }
-                  />
-
-                  {/* Right Tap -> Next Photo */}
-                  <TouchableOpacity
-                    style={styles.tapSide}
-                    activeOpacity={1}
-                    onPress={() =>
-                      setActivePreviewPhotoIdx((prev) =>
-                        prev < validPhotosList.length - 1 ? prev + 1 : 0
-                      )
-                    }
-                  />
-                </View>
-              )}
-
-              {/* Mode & Age Floating Badges */}
-              <View style={styles.showcaseBadgesRow}>
-                <View style={styles.showcaseModeBadge}>
-                  <Text style={styles.showcaseModeText}>
-                    {fitnessMode.replace('Finder', '').toUpperCase()}
-                  </Text>
-                </View>
-                {age ? (
-                  <View style={styles.showcaseAgeBadge}>
-                    <Text style={styles.showcaseAgeText}>{age} YRS</Text>
-                  </View>
-                ) : null}
-              </View>
-            </View>
-
-            {/* Quick Metrics Capsules */}
-            <View style={styles.metricsCapsuleRow}>
-              <View style={styles.detailCapsule}>
-                <Text style={styles.capsuleLabel}>PACE</Text>
-                <Text style={styles.capsuleValue}>{pace || 'Flexible'}</Text>
-              </View>
-              {height ? (
-                <View style={styles.detailCapsule}>
-                  <Text style={styles.capsuleLabel}>HEIGHT</Text>
-                  <Text style={styles.capsuleValue}>{height}</Text>
-                </View>
-              ) : null}
-              <View style={styles.detailCapsule}>
-                <Text style={styles.capsuleLabel}>CITY</Text>
-                <Text style={styles.capsuleValue}>{city || 'Metro Manila'}</Text>
-              </View>
-            </View>
-
-            {/* Schedule & Habit Insets */}
-            <View style={styles.detailsGlassCard}>
-              <View style={styles.detailInfoRow}>
-                <Text style={styles.detailLabel}>Schedule</Text>
-                <Text style={styles.detailValue}>{workoutTime || 'Flexible'}</Text>
-              </View>
-              <View style={styles.divider} />
-              <View style={styles.detailInfoRow}>
-                <Text style={styles.detailLabel}>Frequency</Text>
-                <Text style={styles.detailValue}>{workoutFreq || 'Regular'}</Text>
-              </View>
-            </View>
-
-            {/* Bio Card */}
-            {bio ? (
-              <View style={styles.bioGlassCard}>
-                <Text style={styles.bioHeading}>About</Text>
-                <Text style={styles.bioContent}>{bio}</Text>
-              </View>
-            ) : null}
-
-            {/* Bottom Edit Action */}
-            <TouchableOpacity
-              style={styles.editBottomBtn}
-              onPress={() => triggerTransition(true)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.editBottomBtnText}>Edit Profile Details</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          /* ========================================================= */
-          /* VIEW 2: EDITING FORM                                      */
-          /* ========================================================= */
-          <View>
-            {/* Header */}
-            <View style={styles.header}>
-              <View>
-                <Text style={styles.title}>Edit Profile</Text>
-                <Text style={styles.subtitle}>{userEmail}</Text>
-              </View>
-              {fullName && age ? (
-                <TouchableOpacity
-                  style={styles.cancelActionBtn}
-                  onPress={() => triggerTransition(false)}
-                  activeOpacity={0.75}
-                >
-                  <Text style={styles.cancelActionText}>Done</Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-
-            {statusMessage ? (
-              <View style={styles.statusBanner}>
-                <Text style={styles.statusText}>{statusMessage}</Text>
-              </View>
-            ) : null}
-
-            {/* 3 Photos Slot Uploader */}
-            <Text style={styles.sectionTitle}>Profile Photos</Text>
-            <Text style={styles.subHint}>Upload up to 3 photos for your matchmaking card</Text>
-            <View style={styles.photoGrid}>
-              {[0, 1, 2].map((idx) => {
-                const hasPhoto = Boolean(photos[idx]);
-                return (
-                  <View key={idx} style={styles.photoSlotWrapper}>
-                    <TouchableOpacity
-                      style={[styles.photoSlot, hasPhoto && styles.photoSlotFilled]}
-                      onPress={() => handlePhotoUpload(idx)}
-                      activeOpacity={0.75}
-                    >
-                      {hasPhoto ? (
-                        <Image source={{ uri: photos[idx] }} style={styles.previewImage} />
-                      ) : (
-                        <View style={styles.emptySlotContent}>
-                          <View style={styles.plusCircle}>
-                            <Text style={styles.plusIcon}>＋</Text>
-                          </View>
-                          <Text style={styles.uploadText}>Slot 0{idx + 1}</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                    {hasPhoto && (
-                      <TouchableOpacity
-                        style={styles.deleteBadge}
-                        onPress={() => removePhoto(idx)}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.deleteBadgeText}>✕</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-
-            {/* Personal Details */}
-            <Text style={styles.sectionTitle}>Personal Details</Text>
-            <View style={styles.glassGroup}>
-              <View style={styles.inputRow}>
-                <Text style={styles.fieldLabel}>Name</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  placeholder="Required"
-                  placeholderTextColor="rgba(255, 255, 255, 0.25)"
-                  value={fullName}
-                  onChangeText={setFullName}
-                />
-              </View>
-              <View style={styles.divider} />
-              <View style={styles.inputRow}>
-                <Text style={styles.fieldLabel}>Age</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  placeholder="Required (18+)"
-                  placeholderTextColor="rgba(255, 255, 255, 0.25)"
-                  keyboardType="numeric"
-                  value={age}
-                  onChangeText={setAge}
-                />
-              </View>
-              <View style={styles.divider} />
-              <View style={styles.inputRow}>
-                <Text style={styles.fieldLabel}>Height</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  placeholder="e.g. 5'9"
-                  placeholderTextColor="rgba(255, 255, 255, 0.25)"
-                  value={height}
-                  onChangeText={setHeight}
-                />
-              </View>
-            </View>
-
-            {/* Primary Focus Activity */}
-            <Text style={styles.sectionTitle}>Primary Focus</Text>
-            <View style={styles.glassSegment}>
-              {MODES.map((mode) => {
-                const isSelected = fitnessMode === mode.key;
-                return (
-                  <TouchableOpacity
-                    key={mode.key}
-                    style={[styles.segmentBtn, isSelected && styles.segmentBtnActive]}
-                    onPress={() => {
-                      setFitnessMode(mode.key);
-                      if (!pace) setPace(mode.defaultPace);
-                    }}
-                    activeOpacity={0.75}
-                  >
-                    <Text style={[styles.segmentText, isSelected && styles.segmentTextActive]}>
-                      {mode.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {/* Pace & Location */}
-            <Text style={styles.sectionTitle}>Pace & Location</Text>
-            <View style={styles.glassGroup}>
-              <View style={styles.inputRow}>
-                <Text style={styles.fieldLabel}>Target Pace</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  placeholder="e.g. 5:30 min/km"
-                  placeholderTextColor="rgba(255, 255, 255, 0.25)"
-                  value={pace}
-                  onChangeText={setPace}
-                />
-              </View>
-              <View style={styles.divider} />
-              <View style={styles.inputRow}>
-                <Text style={styles.fieldLabel}>City / Hub</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  placeholder="e.g. Quezon City"
-                  placeholderTextColor="rgba(255, 255, 255, 0.25)"
-                  value={city}
-                  onChangeText={setCity}
-                />
-              </View>
-            </View>
-
-            {/* Schedule */}
-            <Text style={styles.sectionTitle}>Schedule</Text>
-            <View style={styles.chipsRow}>
-              {TIME_PREFERENCES.map((time) => {
-                const isSelected = workoutTime === time;
-                return (
-                  <TouchableOpacity
-                    key={time}
-                    style={[styles.glassChip, isSelected && styles.glassChipActive]}
-                    onPress={() => setWorkoutTime(time)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.glassChipText, isSelected && styles.glassChipTextActive]}>
-                      {time}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {/* Weekly Frequency */}
-            <Text style={styles.sectionTitle}>Weekly Frequency</Text>
-            <View style={styles.chipsRow}>
-              {FREQUENCY_OPTIONS.map((freq) => {
-                const isSelected = workoutFreq === freq;
-                return (
-                  <TouchableOpacity
-                    key={freq}
-                    style={[styles.glassChip, isSelected && styles.glassChipActive]}
-                    onPress={() => setWorkoutFreq(freq)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.glassChipText, isSelected && styles.glassChipTextActive]}>
-                      {freq}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {/* About You */}
-            <Text style={styles.sectionTitle}>About You</Text>
-            <View style={styles.glassGroup}>
-              <TextInput
-                style={styles.bioTextarea}
-                placeholder="Share your running routes, accountability goals, or fitness routine..."
-                placeholderTextColor="rgba(255, 255, 255, 0.25)"
-                value={bio}
-                onChangeText={setBio}
-                multiline
-                numberOfLines={4}
-              />
-            </View>
-
-            {/* Save Button */}
-            <TouchableOpacity
-              style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-              onPress={handleSave}
-              disabled={saving}
-              activeOpacity={0.8}
-            >
-              {saving ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Text style={styles.saveBtnText}>Save Changes</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
-      </Animated.View>
-    </ScrollView>
+        {/* SAVE PROFILE BUTTON */}
+        <TouchableOpacity
+          style={[styles.saveBtn, saving && { opacity: 0.6 }]}
+          onPress={handleSave}
+          disabled={saving}
+          activeOpacity={0.8}
+        >
+          {saving ? (
+            <ActivityIndicator color="#030812" size="small" />
+          ) : (
+            <Text style={styles.saveBtnText}>SAVE PROFILE</Text>
+          )}
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  glassContainer: {
+  container: {
     width: '100%',
-    backgroundColor: 'rgba(16, 18, 25, 0.65)',
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    flex: 1,
-    height: '100%',
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(30px)' } : {}),
+    gap: 20,
   },
-  contentContainer: {
-    padding: 20,
-    paddingBottom: 120, // Clean clearance above the floating footer dock
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  loadingBox: {
+    paddingVertical: 140,
     alignItems: 'center',
-    marginBottom: 16,
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    justifyContent: 'center',
   },
-  title: {
-    fontFamily: APPLE_FONT,
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '700',
-    letterSpacing: -0.3,
+  headerBlock: {
+    gap: 6,
+    paddingHorizontal: 4,
   },
-  subtitle: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.45)',
-    fontSize: 12,
-    marginTop: 2,
-    fontWeight: '400',
-  },
-  cancelActionBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    paddingVertical: 5,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  cancelActionText: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-
-  /* SHOWCASE STYLES */
-  previewContainer: {
-    gap: 12,
-  },
-  previewHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  editActionBtn: {
+  radarKickerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(255, 59, 48, 0.15)',
+  },
+  kickerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#00F0FF',
+  },
+  sectionKicker: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+  sectionTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFFFFF',
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  sectionSub: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+
+  previewHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  previewLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.55)',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+  },
+  previewBadge: {
+    backgroundColor: 'rgba(0, 240, 255, 0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 59, 48, 0.4)',
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 14,
+    borderColor: 'rgba(0, 240, 255, 0.4)',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 10,
   },
-  editActionIcon: {
-    color: '#FF4B2B',
-    fontSize: 12,
+  previewBadgeText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
-  editActionText: {
-    fontFamily: APPLE_FONT,
-    color: '#FF4B2B',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  showcasePhotoViewport: {
+
+  cardWrapper: {
     width: '100%',
-    aspectRatio: 4 / 5, // Edge-to-edge flush framing without side bars
-    borderRadius: 20,
-    backgroundColor: '#050608',
+    backgroundColor: 'rgba(15, 20, 32, 0.9)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+    borderRadius: 28,
     overflow: 'hidden',
-    position: 'relative',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.55,
+    shadowRadius: 28,
+    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(35px)' } : {}),
   },
-  showcaseMainPhoto: {
+  photoViewport: {
+    width: '100%',
+    aspectRatio: 0.96,
+    position: 'relative',
+    backgroundColor: '#030508',
+  },
+  photoImg: {
     width: '100%',
     height: '100%',
     resizeMode: 'cover',
-    ...(Platform.OS === 'web' ? { objectPosition: 'center top' } : {}),
   },
-  emptyShowcasePhoto: {
-    width: '100%',
-    height: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  emptyPhotoIcon: {
-    fontSize: 32,
-  },
-  emptyPhotoText: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.35)',
-    fontSize: 12,
-  },
-  photoDotsRow: {
+  storyProgressRow: {
     position: 'absolute',
-    top: 10,
-    left: 12,
-    right: 12,
+    top: 12,
+    left: 14,
+    right: 14,
     flexDirection: 'row',
-    gap: 6,
-    zIndex: 30,
+    gap: 8,
+    zIndex: 10,
   },
-  photoDot: {
+  storyPip: {
     flex: 1,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+    height: 3.5,
+    borderRadius: 2,
   },
-  photoDotActive: {
+  storyPipActive: {
     backgroundColor: '#00F0FF',
   },
-  tapHitboxLayer: {
+  storyPipDim: {
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  tapLeft: {
     position: 'absolute',
     top: 0,
-    left: 0,
-    right: 0,
     bottom: 0,
-    flexDirection: 'row',
-    zIndex: 20,
+    left: 0,
+    width: '38%',
+    zIndex: 5,
   },
-  tapSide: {
-    flex: 1,
-    height: '100%',
-  },
-  showcaseBadgesRow: {
+  tapRight: {
     position: 'absolute',
-    bottom: 12,
-    left: 12,
-    right: 12,
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: '38%',
+    zIndex: 5,
+  },
+  photoOverlayRow: {
+    position: 'absolute',
+    bottom: 14,
+    left: 14,
+    right: 14,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    zIndex: 25,
-    pointerEvents: 'none',
+    alignItems: 'center',
+    zIndex: 6,
   },
-  showcaseModeBadge: {
-    backgroundColor: 'rgba(255, 59, 48, 0.85)',
+  sportBadge: {
+    backgroundColor: '#FF3B30',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  sportBadgeText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  distanceBadge: {
+    backgroundColor: 'rgba(3, 7, 18, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.5)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(16px)' } : {}),
+  },
+  distanceBadgeText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+
+  profileDetails: {
+    padding: 20,
+    gap: 14,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  athleteName: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFFFFF',
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  ageBubble: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
     paddingVertical: 4,
     paddingHorizontal: 10,
-    borderRadius: 8,
+    borderRadius: 10,
   },
-  showcaseModeText: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 10,
+  ageText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  statusPill: {
+    backgroundColor: 'rgba(255, 59, 48, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.35)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  statusPillText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FF7B72',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  locationLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pinIcon: {
+    fontSize: 14,
+  },
+  locationText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  verifiedGpsPill: {
+    backgroundColor: 'rgba(0, 240, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.35)',
+    paddingVertical: 2,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+  },
+  verifiedGpsText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.8,
   },
-  showcaseAgeBadge: {
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-  },
-  showcaseAgeText: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  metricsCapsuleRow: {
+  metricsGrid: {
     flexDirection: 'row',
-    gap: 8,
-    marginVertical: 4,
+    gap: 10,
+    marginTop: 4,
   },
-  detailCapsule: {
+  metricCell: {
     flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
     alignItems: 'center',
-    gap: 2,
   },
-  capsuleLabel: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.35)',
-    fontSize: 8.5,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  capsuleValue: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 11.5,
-    fontWeight: '600',
-  },
-  detailsGlassCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    overflow: 'hidden',
-  },
-  detailInfoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-  },
-  detailLabel: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 13,
-  },
-  detailValue: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  bioGlassCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    padding: 14,
-    gap: 4,
-  },
-  bioHeading: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.4)',
+  metricLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.45)',
     fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  metricVal: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '700',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
+    textAlign: 'center',
   },
-  bioContent: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.85)',
-    fontSize: 12.5,
-    lineHeight: 18,
+  bioCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    padding: 14,
+    gap: 6,
   },
-  editBottomBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  bioTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  bioBody: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+
+  /* FORM STYLING */
+  formContainer: {
+    backgroundColor: 'rgba(16, 22, 34, 0.88)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 26,
+    padding: 22,
+    gap: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.4,
+    shadowRadius: 24,
+    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(35px)' } : {}),
+  },
+  formSectionTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.6,
+  },
+  fieldRow: {
+    gap: 8,
+  },
+  twoColRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  fieldLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  fieldInput: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 14,
     paddingVertical: 12,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  editBottomBtnText: {
-    fontFamily: APPLE_FONT,
+    paddingHorizontal: 14,
     color: '#FFF',
-    fontSize: 13,
+    fontFamily: SYSTEM_FONT,
+    fontSize: 15,
+  },
+  bioInput: {
+    height: 90,
+    textAlignVertical: 'top',
+    lineHeight: 22,
+  },
+
+  /* GPS LOCK COMPONENT */
+  gpsLockBlock: {
+    backgroundColor: 'rgba(0, 240, 255, 0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.25)',
+    borderRadius: 16,
+    padding: 16,
+    gap: 12,
+  },
+  gpsLockHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  gpsSubNotice: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: 11,
+    marginTop: 2,
+    lineHeight: 15,
+    maxWidth: 220,
+  },
+  refreshGpsBtn: {
+    backgroundColor: 'rgba(0, 240, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.4)',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  refreshGpsText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  gpsStatusDisplay: {
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    borderRadius: 12,
+    padding: 12,
+    gap: 4,
+  },
+  gpsIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  gpsPulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  gpsCityDetectedText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  gpsCoordsText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 11,
     fontWeight: '600',
   },
 
-  /* FORM STYLES */
-  statusBanner: {
-    backgroundColor: 'rgba(0, 240, 255, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 240, 255, 0.25)',
-    padding: 10,
-    borderRadius: 12,
-    marginBottom: 16,
-  },
-  statusText: {
-    fontFamily: APPLE_FONT,
-    color: '#00F0FF',
-    fontSize: 12,
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  sectionTitle: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.45)',
-    fontSize: 11.5,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginTop: 18,
-    marginBottom: 6,
-    marginLeft: 4,
-  },
-  subHint: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.3)',
-    fontSize: 11.5,
-    marginBottom: 10,
-    marginLeft: 4,
-  },
-  photoGrid: {
+  /* CHIPS */
+  chipsContainer: {
     flexDirection: 'row',
-    gap: 10,
-    marginBottom: 6,
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
   },
-  photoSlotWrapper: {
-    flex: 1,
-    position: 'relative',
-  },
-  photoSlot: {
-    width: '100%',
-    height: 115,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  chip: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+  },
+  chipActive: {
+    backgroundColor: 'rgba(0, 240, 255, 0.16)',
+    borderColor: '#00F0FF',
+  },
+  chipText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.65)',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  chipTextActive: {
+    color: '#00F0FF',
+    fontWeight: '800',
+  },
+
+  statusChip: {
+    backgroundColor: 'rgba(255, 59, 48, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.25)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  statusChipActive: {
+    backgroundColor: 'rgba(255, 59, 48, 0.25)',
+    borderColor: '#FF3B30',
+  },
+  statusChipText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.75)',
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  statusChipTextActive: {
+    color: '#FFF',
+    fontWeight: '800',
+  },
+
+  /* THUMBNAILS */
+  photoThumbnailsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  thumbWrapper: {
+    width: 80,
+    height: 80,
+    borderRadius: 16,
     overflow: 'hidden',
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
-  photoSlotFilled: {
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-    backgroundColor: '#050608',
-  },
-  previewImage: {
+  thumbImg: {
     width: '100%',
     height: '100%',
     resizeMode: 'cover',
   },
-  emptySlotContent: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  plusCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  plusIcon: {
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 18,
-    lineHeight: 20,
-    fontWeight: '300',
-  },
-  uploadText: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.4)',
-    fontSize: 10.5,
-    fontWeight: '500',
-  },
-  deleteBadge: {
+  deletePhotoBtn: {
     position: 'absolute',
-    top: -5,
-    right: -5,
+    top: 5,
+    right: 5,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: 'rgba(22, 24, 32, 0.95)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 10,
   },
-  deleteBadgeText: {
-    color: '#FFF',
-    fontSize: 10,
+  deletePhotoText: {
+    color: '#FF3B30',
+    fontSize: 12,
     fontWeight: 'bold',
   },
-  glassGroup: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    overflow: 'hidden',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    marginLeft: 16,
-  },
-  fieldLabel: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.55)',
-    fontSize: 13.5,
-    width: 100,
-    fontWeight: '500',
-  },
-  fieldInput: {
-    fontFamily: APPLE_FONT,
-    flex: 1,
-    color: '#FFFFFF',
-    fontSize: 13.5,
-    padding: 0,
-  },
-  bioTextarea: {
-    fontFamily: APPLE_FONT,
-    color: '#FFFFFF',
-    fontSize: 13.5,
-    padding: 14,
+  uploadCardBtn: {
+    width: 80,
     height: 80,
-    textAlignVertical: 'top',
-    lineHeight: 18,
-  },
-  glassSegment: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 14,
-    padding: 3,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  segmentBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 11,
-  },
-  segmentBtnActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-  },
-  segmentText: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.45)',
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  segmentTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  chipsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  glassChip: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  glassChipActive: {
-    backgroundColor: 'rgba(255, 59, 48, 0.2)',
-    borderColor: '#FF3B30',
-  },
-  glassChipText: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.55)',
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  glassChipTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  saveBtn: {
-    backgroundColor: '#FF3B30',
     borderRadius: 16,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 26,
-    shadowColor: '#FF3B30',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45,
-    shadowRadius: 18,
-  },
-  saveBtnText: {
-    fontFamily: APPLE_FONT,
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  centerBox: {
-    backgroundColor: 'rgba(16, 18, 25, 0.65)',
-    borderRadius: 24,
-    padding: 40,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(0, 240, 255, 0.4)',
     alignItems: 'center',
     justifyContent: 'center',
-    width: '100%',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(30px)' } : {}),
+    backgroundColor: 'rgba(0, 240, 255, 0.05)',
+    gap: 4,
   },
-  loadingText: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 12,
-    marginTop: 10,
-    fontWeight: '500',
+  uploadIcon: {
+    color: '#00F0FF',
+    fontSize: 24,
+    fontWeight: '300',
+  },
+  uploadLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+
+  /* SAVE BUTTON */
+  saveBtn: {
+    backgroundColor: '#00F0FF',
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 12,
+    shadowColor: '#00F0FF',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+  },
+  saveBtnText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#030812',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 1.4,
   },
 });

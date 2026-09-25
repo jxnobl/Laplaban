@@ -1,1219 +1,1204 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
+  StyleSheet,
   View,
   Text,
+  Image,
   TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
+  Dimensions,
   Animated,
   PanResponder,
-  Dimensions,
-  Image,
   Platform,
+  ActivityIndicator,
+  ScrollView,
+  Modal,
 } from 'react-native';
+import * as Location from 'expo-location';
 import { supabase } from '../lib/supabase';
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const SWIPE_THRESHOLD = 95;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const SWIPE_THRESHOLD = 0.28 * SCREEN_WIDTH;
 
-const ABS_MIN_AGE = 18;
-const ABS_MAX_AGE = 60;
-const MIN_GAP = 3;
+const SYSTEM_FONT =
+  Platform.OS === 'ios'
+    ? 'SF Pro Display'
+    : Platform.OS === 'web'
+    ? "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', sans-serif"
+    : undefined;
 
 interface Profile {
   id: string;
   full_name: string;
-  age?: number | null;
-  height?: string | null;
+  age?: number;
   fitness_mode: string;
-  pace: string;
-  city: string;
-  workout_time?: string | null;
-  workout_frequency?: string | null;
-  bio: string;
+  dating_status?: string;
+  city?: string;
+  latitude?: number;
+  longitude?: number;
+  pace?: string;
+  height?: string;
+  schedule?: string;
+  bio?: string;
+  avatar_url?: string;
   photos?: string[];
-  latitude: number | null;
-  longitude: number | null;
+  distance?: number;
 }
 
-interface FinderDeckProps {
-  currentUserId: string;
-}
-
-const MODES = [
-  { key: 'All', label: 'ALL MODES' },
-  { key: 'WalkerFinder', label: 'WALKER' },
-  { key: 'RunnerFinder', label: 'RUNNER' },
-  { key: 'BikerFinder', label: 'BIKER' },
-  { key: 'GymFinder', label: 'GYM' },
+const CATEGORIES = [
+  { id: 'ALL', label: 'ALL MODES' },
+  { id: 'WALK', label: 'WALKER FINDER' },
+  { id: 'RUN', label: 'RUNNER FINDER' },
+  { id: 'BIKE', label: 'BIKER FINDER' },
+  { id: 'GYM', label: 'GYM BUDDY' },
 ];
 
-const APPLE_FONT =
-  Platform.OS === 'web'
-    ? "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif"
-    : undefined;
+// Haversine distance formula in kilometers
+function getHaversineDistance(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const R = 6371; // Radius of Earth in KM
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return parseFloat((R * c).toFixed(1));
+}
 
-export default function FinderDeck({ currentUserId }: FinderDeckProps) {
-  const [rawProfiles, setRawProfiles] = useState<Profile[]>([]);
-  const [filteredProfiles, setFilteredProfiles] = useState<Profile[]>([]);
+export default function FinderDeck({ currentUserId }: { currentUserId: string }) {
+  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [activeFilter, setActiveFilter] = useState('All');
-
-  // Dual-Handle Range State (with strict 3-yr gap)
-  const [minAge, setMinAge] = useState(18);
-  const [maxAge, setMaxAge] = useState(35);
-
-  const [allowExpandAge, setAllowExpandAge] = useState(true);
-  const [photoIndex, setPhotoIndex] = useState(0);
+  const [selectedMode, setSelectedMode] = useState('ALL');
+  const [activePhotoIdx, setActivePhotoIdx] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
-  const [isExpandedActive, setIsExpandedActive] = useState(false);
 
-  // Animations
-  const position = useRef(new Animated.ValueXY()).current;
-  const nextCardScale = useRef(new Animated.Value(0.95)).current;
-  const drawerHeight = useRef(new Animated.Value(0)).current;
-  const toggleAnim = useRef(new Animated.Value(allowExpandAge ? 1 : 0)).current;
+  // GPS Location State
+  const [userCoords, setUserCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [maxDistanceKm, setMaxDistanceKm] = useState(25);
 
-  const calculateDistance = (lat1?: number | null, lon1?: number | null) => {
-    if (!lat1 || !lon1) return 'METRO MANILA';
-    const userLat = 14.6537;
-    const userLon = 121.0685;
-    const R = 6371;
-    const dLat = ((lat1 - userLat) * Math.PI) / 180;
-    const dLon = ((lon1 - userLon) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((userLat * Math.PI) / 180) *
-        Math.cos((lat1 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return `${(R * c).toFixed(1)} KM PROXIMITY`;
-  };
+  // Age Filter Range (Minimum 3 years difference enforced)
+  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
+  const [minAge, setMinAge] = useState(18);
+  const [maxAge, setMaxAge] = useState(32);
 
-  const fetchCandidates = async () => {
+  // Consistent useNativeDriver animations (no driver conflict crashes)
+  const pan = useRef(new Animated.ValueXY()).current;
+  const cardScale = useRef(new Animated.Value(1)).current;
+
+  // Track GPS on Mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const loc = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
+          setUserCoords({
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+          });
+        }
+      } catch {
+        // Fallback default coordinates (Metro Manila Center)
+        setUserCoords({ latitude: 14.5547, longitude: 121.0244 });
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    setActivePhotoIdx(0);
+  }, [currentIndex]);
+
+  const fetchProfiles = async () => {
     setLoading(true);
-    let query = supabase.from('profiles').select('*').neq('id', currentUserId);
+    try {
+      let query = supabase.from('profiles').select('*').neq('id', currentUserId);
 
-    if (activeFilter !== 'All') {
-      query = query.eq('fitness_mode', activeFilter);
-    }
+      if (selectedMode !== 'ALL') {
+        const modeMap: Record<string, string> = {
+          WALK: 'Walker',
+          RUN: 'RunnerFinder',
+          BIKE: 'Biker',
+          GYM: 'Gym',
+        };
+        query = query.eq('fitness_mode', modeMap[selectedMode] || selectedMode);
+      }
 
-    const { data, error } = await query;
-    if (!error && data) {
-      setRawProfiles(data);
-    }
-    setLoading(false);
-  };
+      const { data, error } = await query;
+      let matchedList: Profile[] = [];
 
-  useEffect(() => {
-    fetchCandidates();
-  }, [activeFilter]);
+      if (!error && data && data.length > 0) {
+        matchedList = data.map((item: any) => {
+          let dist = item.distance ?? 3.5;
+          if (userCoords && item.latitude && item.longitude) {
+            dist = getHaversineDistance(
+              userCoords.latitude,
+              userCoords.longitude,
+              item.latitude,
+              item.longitude
+            );
+          }
+          return { ...item, distance: dist };
+        });
+      } else {
+        // Demo athletes with varied GPS coordinates around Metro Manila
+        matchedList = [
+          {
+            id: 'mock-bea',
+            full_name: 'Bea Valenzuela',
+            age: 26,
+            fitness_mode: 'Gym Buddy',
+            dating_status: 'Leg Day Survivor 🏋️‍♀️',
+            city: 'Makati City',
+            latitude: 14.5547,
+            longitude: 121.0244,
+            pace: 'Hypertrophy Focus',
+            height: "5'6",
+            schedule: 'Late Afternoon',
+            bio: 'Looking for a spotter at Anytime Fitness Ayala Triangle who will not judge me for crying during Romanian deadlifts.',
+            avatar_url:
+              'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
+            photos: [
+              'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
+              'https://images.unsplash.com/photo-1517838277536-f5f99be501cd?auto=format&fit=crop&w=1200&q=80',
+            ],
+            distance: userCoords
+              ? getHaversineDistance(userCoords.latitude, userCoords.longitude, 14.5547, 121.0244)
+              : 4.2,
+          },
+          {
+            id: 'mock-kyle',
+            full_name: 'Kyle Arboleda',
+            age: 24,
+            fitness_mode: 'Runner Finder',
+            dating_status: 'Single & Ready to Lap 🏃‍♂️',
+            city: 'BGC, Taguig',
+            latitude: 14.5492,
+            longitude: 121.0507,
+            pace: '5:15 / km',
+            height: "5'10",
+            schedule: '5:30 AM Mornings',
+            bio: 'Training for 21K at BGC Greenway. Guaranteed to pace you and bring iced Pocari Sweat after.',
+            avatar_url:
+              'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=1200&q=80',
+            photos: [
+              'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=1200&q=80',
+            ],
+            distance: userCoords
+              ? getHaversineDistance(userCoords.latitude, userCoords.longitude, 14.5492, 121.0507)
+              : 2.1,
+          },
+        ];
+      }
 
-  // Dual-Handle Age Range Filtering with Fallback Logic
-  useEffect(() => {
-    if (rawProfiles.length === 0) {
-      setFilteredProfiles([]);
-      setIsExpandedActive(false);
-      return;
-    }
-
-    const exactMatches = rawProfiles.filter((p) => {
-      if (p.age == null) return false;
-      return p.age >= minAge && p.age <= maxAge;
-    });
-
-    if (exactMatches.length > 0) {
-      setFilteredProfiles(exactMatches);
-      setIsExpandedActive(false);
-    } else if (allowExpandAge) {
-      const expandedMatches = rawProfiles.filter((p) => {
-        if (p.age == null) return false;
-        return p.age >= Math.max(18, minAge - 5) && p.age <= maxAge + 5;
+      // Filter by Age Bounds and GPS Max Radius
+      const filtered = matchedList.filter((p) => {
+        const pAge = p.age ?? 24;
+        const pDist = p.distance ?? 0;
+        return pAge >= minAge && pAge <= maxAge && pDist <= maxDistanceKm;
       });
 
-      if (expandedMatches.length > 0) {
-        setFilteredProfiles(expandedMatches);
-        setIsExpandedActive(true);
-      } else {
-        setFilteredProfiles(rawProfiles);
-        setIsExpandedActive(true);
-      }
-    } else {
-      setFilteredProfiles([]);
-      setIsExpandedActive(false);
-    }
-
-    setCurrentIndex(0);
-    setPhotoIndex(0);
-    nextCardScale.setValue(0.95);
-  }, [rawProfiles, minAge, maxAge, allowExpandAge]);
-
-  // Drawer Animation
-  const toggleDrawer = () => {
-    const toValue = filterDrawerOpen ? 0 : 1;
-    setFilterDrawerOpen(!filterDrawerOpen);
-    Animated.spring(drawerHeight, {
-      toValue,
-      friction: 8,
-      tension: 45,
-      useNativeDriver: false,
-    }).start();
-  };
-
-  const toggleExpandAgeSwitch = () => {
-    const nextVal = !allowExpandAge;
-    setAllowExpandAge(nextVal);
-    Animated.spring(toggleAnim, {
-      toValue: nextVal ? 1 : 0,
-      friction: 6,
-      tension: 60,
-      useNativeDriver: false,
-    }).start();
-  };
-
-  const handleMinSliderChange = (newVal: number) => {
-    if (newVal + MIN_GAP <= maxAge) {
-      setMinAge(newVal);
-    } else {
-      setMinAge(maxAge - MIN_GAP);
+      setProfiles(filtered);
+    } catch {
+      // Offline fallback
+    } finally {
+      setLoading(false);
+      setCurrentIndex(0);
+      pan.setValue({ x: 0, y: 0 });
     }
   };
 
-  const handleMaxSliderChange = (newVal: number) => {
-    if (newVal - MIN_GAP >= minAge) {
-      setMaxAge(newVal);
-    } else {
-      setMaxAge(minAge + MIN_GAP);
-    }
-  };
+  useEffect(() => {
+    fetchProfiles();
+  }, [selectedMode, minAge, maxAge, maxDistanceKm, userCoords]);
 
-  const applyPreset = (min: number, max: number) => {
-    setMinAge(min);
-    setMaxAge(max);
-  };
-
-  const forceSwipe = (direction: 'right' | 'left') => {
-    const x = direction === 'right' ? SCREEN_WIDTH + 140 : -SCREEN_WIDTH - 140;
-    Animated.parallel([
-      Animated.timing(position, {
-        toValue: { x, y: 0 },
-        duration: 250,
-        useNativeDriver: false,
-      }),
-      Animated.spring(nextCardScale, {
-        toValue: 1,
-        friction: 5,
-        useNativeDriver: false,
-      }),
-    ]).start(() => onSwipeComplete(direction === 'right'));
-  };
-
-  const onSwipeComplete = async (isLiked: boolean) => {
-    const candidate = filteredProfiles[currentIndex];
-    position.setValue({ x: 0, y: 0 });
-    nextCardScale.setValue(0.95);
-    setPhotoIndex(0);
-
-    if (candidate) {
-      await supabase.from('matches').upsert([
-        {
-          swiper_id: currentUserId,
-          swiped_id: candidate.id,
-          is_liked: isLiked,
+  // UNIFIED ANIMATION RESPONDER (useNativeDriver: false across all calls)
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gestureState) => {
+          return (
+            Math.abs(gestureState.dx) > 10 &&
+            Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
+          );
         },
-      ]);
-    }
-    setCurrentIndex((prev) => prev + 1);
+        onPanResponderGrant: () => {
+          Animated.spring(cardScale, {
+            toValue: 0.98,
+            useNativeDriver: false,
+          }).start();
+        },
+        onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
+          useNativeDriver: false,
+        }),
+        onPanResponderRelease: (_, gestureState) => {
+          Animated.spring(cardScale, {
+            toValue: 1,
+            useNativeDriver: false,
+          }).start();
+
+          if (gestureState.dx > SWIPE_THRESHOLD) {
+            triggerSwipe('right');
+          } else if (gestureState.dx < -SWIPE_THRESHOLD) {
+            triggerSwipe('left');
+          } else {
+            Animated.spring(pan, {
+              toValue: { x: 0, y: 0 },
+              friction: 6,
+              tension: 60,
+              useNativeDriver: false,
+            }).start();
+          }
+        },
+      }),
+    []
+  );
+
+  const triggerSwipe = (direction: 'left' | 'right') => {
+    const xDest = direction === 'right' ? SCREEN_WIDTH + 140 : -SCREEN_WIDTH - 140;
+    Animated.timing(pan, {
+      toValue: { x: xDest, y: 0 },
+      duration: 220,
+      useNativeDriver: false,
+    }).start(() => {
+      pan.setValue({ x: 0, y: 0 });
+      setCurrentIndex((prev) => prev + 1);
+    });
   };
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onPanResponderMove: (_evt, gesture) => {
-        position.setValue({ x: gesture.dx, y: gesture.dy });
-        const progress = Math.min(Math.abs(gesture.dx) / SWIPE_THRESHOLD, 1);
-        nextCardScale.setValue(0.95 + progress * 0.05);
-      },
-      onPanResponderRelease: (_evt, gesture) => {
-        if (gesture.dx > SWIPE_THRESHOLD) {
-          forceSwipe('right');
-        } else if (gesture.dx < -SWIPE_THRESHOLD) {
-          forceSwipe('left');
-        } else {
-          Animated.spring(position, {
-            toValue: { x: 0, y: 0 },
-            friction: 4,
-            useNativeDriver: false,
-          }).start();
-          Animated.spring(nextCardScale, {
-            toValue: 0.95,
-            friction: 4,
-            useNativeDriver: false,
-          }).start();
-        }
-      },
-    })
-  ).current;
-
-  const rotate = position.x.interpolate({
-    inputRange: [-SCREEN_WIDTH * 1.5, 0, SCREEN_WIDTH * 1.5],
-    outputRange: ['-18deg', '0deg', '18deg'],
+  // Interpolations
+  const rotateCard = pan.x.interpolate({
+    inputRange: [-SCREEN_WIDTH, 0, SCREEN_WIDTH],
+    outputRange: ['-12deg', '0deg', '12deg'],
   });
 
-  const likeOpacity = position.x.interpolate({
-    inputRange: [20, 80],
+  const connectOpacity = pan.x.interpolate({
+    inputRange: [20, SWIPE_THRESHOLD],
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
 
-  const passOpacity = position.x.interpolate({
-    inputRange: [-80, -20],
+  const passOpacity = pan.x.interpolate({
+    inputRange: [-SWIPE_THRESHOLD, -20],
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
 
-  const toggleTranslateX = toggleAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [2, 22],
-  });
+  const currentProfile = profiles[currentIndex];
 
-  const toggleBgColor = toggleAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['rgba(255, 255, 255, 0.1)', '#FF3B30'],
-  });
+  const handleNextPhoto = (total: number) => {
+    setActivePhotoIdx((prev) => (prev < total - 1 ? prev + 1 : 0));
+  };
 
-  const drawerHeightInterpolated = drawerHeight.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 260],
-  });
+  const handlePrevPhoto = (total: number) => {
+    setActivePhotoIdx((prev) => (prev > 0 ? prev - 1 : total - 1));
+  };
 
-  const minPercent = ((minAge - ABS_MIN_AGE) / (ABS_MAX_AGE - ABS_MIN_AGE)) * 100;
-  const maxPercent = ((maxAge - ABS_MIN_AGE) / (ABS_MAX_AGE - ABS_MIN_AGE)) * 100;
+  // Age Adjusters with Minimum 3-Year Gap
+  const handleMinAgeChange = (delta: number) => {
+    const target = minAge + delta;
+    if (target >= 18 && maxAge - target >= 3) {
+      setMinAge(target);
+    }
+  };
 
-  const candidate = filteredProfiles[currentIndex];
-  const nextCandidate = filteredProfiles[currentIndex + 1];
+  const handleMaxAgeChange = (delta: number) => {
+    const target = maxAge + delta;
+    if (target <= 65 && target - minAge >= 3) {
+      setMaxAge(target);
+    }
+  };
 
-  const candidatePhotos =
-    candidate?.photos && candidate.photos.length > 0
-      ? candidate.photos
-      : ['https://images.unsplash.com/photo-1517838277536-f5f99be501cd?w=800&auto=format&fit=crop'];
+  if (loading) {
+    return (
+      <View style={styles.loadingBox}>
+        <ActivityIndicator color="#00F0FF" size="large" />
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.container}>
-      {/* Filter Tabs & Age Pill Trigger */}
-      <View style={styles.topControlRow}>
-        <View style={styles.glassFilterBar}>
-          {MODES.map((mode) => {
-            const isActive = activeFilter === mode.key;
+    <View style={styles.deckRoot}>
+      {/* Category Pills & Radar Controls */}
+      <View style={styles.categoryContainer}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryScrollContent}
+        >
+          {CATEGORIES.map((cat) => {
+            const isActive = selectedMode === cat.id;
             return (
               <TouchableOpacity
-                key={mode.key}
-                style={[styles.filterSegment, isActive && styles.filterSegmentActive]}
-                onPress={() => setActiveFilter(mode.key)}
-                activeOpacity={0.75}
+                key={cat.id}
+                style={[styles.categoryPill, isActive && styles.categoryPillActive]}
+                onPress={() => setSelectedMode(cat.id)}
+                activeOpacity={0.7}
               >
-                <Text style={[styles.filterLabel, isActive && styles.filterLabelActive]}>
-                  {mode.label}
+                <Text style={[styles.categoryText, isActive && styles.categoryTextActive]}>
+                  {cat.label}
                 </Text>
               </TouchableOpacity>
             );
           })}
-        </View>
+        </ScrollView>
 
+        {/* Filter Trigger Button */}
         <TouchableOpacity
-          style={[styles.ageDrawerBtn, filterDrawerOpen && styles.ageDrawerBtnActive]}
-          onPress={toggleDrawer}
-          activeOpacity={0.75}
+          style={styles.filterTriggerPill}
+          onPress={() => setIsFilterModalOpen(true)}
+          activeOpacity={0.7}
         >
-          <Text style={styles.ageDrawerIcon}>⚡</Text>
-          <Text style={styles.ageDrawerLabel}>
-            {minAge}–{maxAge >= ABS_MAX_AGE ? '60+' : maxAge}
+          <Text style={styles.filterTriggerBolt}>⚡</Text>
+          <Text style={styles.filterTriggerText}>
+            {minAge}–{maxAge} • {maxDistanceKm}KM
           </Text>
         </TouchableOpacity>
       </View>
 
-      {/* Animated Age Filter Drawer */}
-      <Animated.View style={[styles.drawerContainer, { maxHeight: drawerHeightInterpolated }]}>
-        <View style={styles.drawerInner}>
-          <View style={styles.sliderHeaderRow}>
-            <Text style={styles.drawerHeading}>DISCOVERY AGE RANGE</Text>
-            <View style={styles.sliderValBadge}>
-              <Text style={styles.sliderValText}>
-                {minAge} – {maxAge >= ABS_MAX_AGE ? '60+' : maxAge} YRS
-              </Text>
-            </View>
-          </View>
-
-          {/* Quick Preset Buttons */}
-          <View style={styles.presetRow}>
-            <TouchableOpacity style={styles.presetChip} onPress={() => applyPreset(18, 24)}>
-              <Text style={styles.presetChipText}>18–24</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.presetChip} onPress={() => applyPreset(22, 28)}>
-              <Text style={styles.presetChipText}>22–28</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.presetChip} onPress={() => applyPreset(26, 35)}>
-              <Text style={styles.presetChipText}>26–35</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.presetChip} onPress={() => applyPreset(18, 60)}>
-              <Text style={styles.presetChipText}>All (18–60+)</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Range Sliders */}
-          <View style={styles.sliderBox}>
-            <View style={styles.trackBackground}>
-              <View
-                style={[
-                  styles.trackHighlight,
-                  {
-                    left: `${minPercent}%`,
-                    width: `${Math.max(0, maxPercent - minPercent)}%`,
-                  },
-                ]}
-              />
-            </View>
-
-            {/* Slider 1: MINIMUM AGE */}
-            <View style={styles.individualSliderRow}>
-              <Text style={styles.handleLabel}>MINIMUM: {minAge} YRS</Text>
-              {Platform.OS === 'web' ? (
-                <input
-                  type="range"
-                  min={ABS_MIN_AGE}
-                  max={ABS_MAX_AGE - MIN_GAP}
-                  value={minAge}
-                  onChange={(e) => handleMinSliderChange(Number(e.target.value))}
-                  style={{
-                    width: '100%',
-                    accentColor: '#FF3B30',
-                    cursor: 'pointer',
-                    height: 20,
-                  } as any}
-                />
-              ) : null}
-            </View>
-
-            {/* Slider 2: MAXIMUM AGE */}
-            <View style={styles.individualSliderRow}>
-              <Text style={styles.handleLabel}>
-                MAXIMUM: {maxAge >= ABS_MAX_AGE ? '60+' : maxAge} YRS
-              </Text>
-              {Platform.OS === 'web' ? (
-                <input
-                  type="range"
-                  min={ABS_MIN_AGE + MIN_GAP}
-                  max={ABS_MAX_AGE}
-                  value={maxAge}
-                  onChange={(e) => handleMaxSliderChange(Number(e.target.value))}
-                  style={{
-                    width: '100%',
-                    accentColor: '#00F0FF',
-                    cursor: 'pointer',
-                    height: 20,
-                  } as any}
-                />
-              ) : null}
-            </View>
-          </View>
-
-          {/* Auto-Expand Animated Toggle */}
-          <View style={styles.toggleRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.toggleTitle}>Auto-Expand If No Matches</Text>
-              <Text style={styles.toggleSub}>
-                Expands range smoothly so your training radar is never empty
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              onPress={toggleExpandAgeSwitch}
-              activeOpacity={0.8}
-              style={styles.switchTouchTarget}
-            >
-              <Animated.View style={[styles.switchTrack, { backgroundColor: toggleBgColor }]}>
-                <Animated.View
-                  style={[
-                    styles.switchThumb,
-                    { transform: [{ translateX: toggleTranslateX }] },
-                  ]}
-                />
-              </Animated.View>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Animated.View>
-
-      {/* Expanded Range Notice Pill */}
-      {isExpandedActive && (
-        <View style={styles.expandedNoticePill}>
-          <Text style={styles.expandedNoticeDot}>•</Text>
-          <Text style={styles.expandedNoticeText}>
-            EXPANDED RADAR: Showing active athletes closest to {minAge}–{maxAge} yrs
-          </Text>
-        </View>
-      )}
-
-      {loading ? (
-        <View style={styles.loadingBox}>
-          <ActivityIndicator size="small" color="#FF3B30" />
-          <Text style={styles.radarText}>CALIBRATING LOCAL RADAR...</Text>
-        </View>
-      ) : candidate ? (
-        <View style={styles.deckViewport}>
-          {/* Peeking Background Card */}
-          {nextCandidate && (
-            <Animated.View
-              style={[
-                styles.underlyingGlassCard,
-                { transform: [{ scale: nextCardScale }] },
-              ]}
-            >
-              <View style={styles.underlyingCardPhotoPlaceholder} />
-            </Animated.View>
-          )}
-
-          {/* Active Top Draggable Glass Card */}
+      {/* Discovery Card */}
+      {currentProfile ? (
+        <Animated.View
+          {...panResponder.panHandlers}
+          style={[
+            styles.cardWrapper,
+            {
+              transform: [
+                { translateX: pan.x },
+                { translateY: pan.y },
+                { rotate: rotateCard },
+                { scale: cardScale },
+              ],
+            },
+          ]}
+        >
+          {/* Holographic Decision Stamps */}
           <Animated.View
-            {...panResponder.panHandlers}
-            style={[
-              styles.glassCard,
-              {
-                transform: [
-                  { translateX: position.x },
-                  { translateY: position.y },
-                  { rotate },
-                ],
-              },
-            ]}
+            style={[styles.decisionStamp, styles.stampRight, { opacity: connectOpacity }]}
           >
-            {/* Holographic Glowing Stamps */}
-            <Animated.View style={[styles.stampPill, styles.likeStamp, { opacity: likeOpacity }]}>
-              <Text style={styles.likeStampText}>LAP MATCH 🔥</Text>
-            </Animated.View>
-
-            <Animated.View style={[styles.stampPill, styles.passStamp, { opacity: passOpacity }]}>
-              <Text style={styles.passStampText}>PASS ✖</Text>
-            </Animated.View>
-
-            {/* Edge-to-Edge 4:5 Portrait Viewport */}
-            <View style={styles.showcasePhotoViewport}>
-              <Image
-                source={{ uri: candidatePhotos[photoIndex] || candidatePhotos[0] }}
-                style={styles.showcaseMainPhoto}
-              />
-              <View style={styles.vignetteOverlay} />
-
-              {/* Multi-Photo Carousel Story Bars (Top) */}
-              {candidatePhotos.length > 1 && (
-                <View style={styles.photoDotsRow}>
-                  {candidatePhotos.map((_, i) => (
-                    <TouchableOpacity
-                      key={i}
-                      style={[
-                        styles.photoDot,
-                        i === photoIndex && styles.photoDotActive,
-                      ]}
-                      onPress={() => setPhotoIndex(i)}
-                      activeOpacity={0.8}
-                    />
-                  ))}
-                </View>
-              )}
-
-              {/* Left / Right Interactive Tap Zones */}
-              {candidatePhotos.length > 1 && (
-                <View style={styles.tapHitboxLayer}>
-                  <TouchableOpacity
-                    style={styles.tapSide}
-                    activeOpacity={1}
-                    onPress={() =>
-                      setPhotoIndex((prev) =>
-                        prev > 0 ? prev - 1 : candidatePhotos.length - 1
-                      )
-                    }
-                  />
-                  <TouchableOpacity
-                    style={styles.tapSide}
-                    activeOpacity={1}
-                    onPress={() =>
-                      setPhotoIndex((prev) =>
-                        prev < candidatePhotos.length - 1 ? prev + 1 : 0
-                      )
-                    }
-                  />
-                </View>
-              )}
-
-              {/* Mode, Proximity & Age HUD Overlay */}
-              <View style={styles.hudOverlay}>
-                <View style={styles.hudTopBadges}>
-                  <View style={styles.glassBadgeNeon}>
-                    <Text style={styles.badgeNeonText}>
-                      {candidate.fitness_mode.replace('Finder', '').toUpperCase()}
-                    </Text>
-                  </View>
-                  <View style={styles.glassBadgeMuted}>
-                    <Text style={styles.badgeMutedText}>
-                      {calculateDistance(candidate.latitude, candidate.longitude)}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Name & Age Title Bar */}
-                <View style={styles.hudNameRow}>
-                  <Text style={styles.nameText}>{candidate.full_name}</Text>
-                  {candidate.age ? (
-                    <View style={styles.agePill}>
-                      <Text style={styles.agePillText}>{candidate.age} YRS</Text>
-                    </View>
-                  ) : null}
-                </View>
-                <Text style={styles.locationCity}>📍 {candidate.city?.toUpperCase() || 'METRO MANILA'}</Text>
-              </View>
-            </View>
-
-            {/* Glass Profile Details Body */}
-            <View style={styles.cardBody}>
-              {/* Metric Capsules */}
-              <View style={styles.metricsCapsuleRow}>
-                <View style={styles.detailCapsule}>
-                  <Text style={styles.capsuleLabel}>PACE</Text>
-                  <Text style={styles.capsuleValue}>{candidate.pace || 'Adaptive'}</Text>
-                </View>
-                {candidate.height ? (
-                  <View style={styles.detailCapsule}>
-                    <Text style={styles.capsuleLabel}>HEIGHT</Text>
-                    <Text style={styles.capsuleValue}>{candidate.height}</Text>
-                  </View>
-                ) : null}
-                {candidate.workout_time ? (
-                  <View style={styles.detailCapsule}>
-                    <Text style={styles.capsuleLabel}>SCHEDULE</Text>
-                    <Text style={styles.capsuleValue}>{candidate.workout_time}</Text>
-                  </View>
-                ) : null}
-              </View>
-
-              {/* Bio Card */}
-              {candidate.bio ? (
-                <View style={styles.bioGlassCard}>
-                  <Text style={styles.bioHeading}>TRAINING ETHOS</Text>
-                  <Text style={styles.bioContent} numberOfLines={2}>
-                    {candidate.bio}
-                  </Text>
-                </View>
-              ) : null}
-
-              {/* Tactile Action Pedestals */}
-              <View style={styles.pedestalActionRow}>
-                <TouchableOpacity
-                  style={[styles.glassPedestal, styles.passBorder]}
-                  onPress={() => forceSwipe('left')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.passIcon}>✖</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.glassPedestal, styles.matchGlowBorder]}
-                  onPress={() => forceSwipe('right')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.matchIcon}>🔥</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+            <Text style={styles.stampRightText}>CONNECT ⚡</Text>
           </Animated.View>
-        </View>
-      ) : (
-        <View style={styles.glassEmpty}>
-          <Text style={styles.emptyIcon}>📡</Text>
-          <Text style={styles.emptyTitle}>RADAR COMPLETED</Text>
-          <Text style={styles.emptySubtitle}>
-            No athletes found in the {minAge}–{maxAge} bracket. Adjust your age sliders or tap below to reset the radar.
-          </Text>
-          <TouchableOpacity
-            style={styles.glassActionBtn}
-            onPress={() => {
-              setMinAge(18);
-              setMaxAge(60);
-              fetchCandidates();
-            }}
+
+          <Animated.View
+            style={[styles.decisionStamp, styles.stampLeft, { opacity: passOpacity }]}
           >
-            <Text style={styles.actionBtnText}>RESET TO FULL SPECTRUM (18–60+)</Text>
+            <Text style={styles.stampLeftText}>PASS ✕</Text>
+          </Animated.View>
+
+          {/* Photo Carousel Area */}
+          {(() => {
+            const photoList =
+              currentProfile.photos && currentProfile.photos.length > 0
+                ? currentProfile.photos
+                : [
+                    currentProfile.avatar_url ||
+                      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
+                  ];
+
+            return (
+              <View style={styles.photoViewport}>
+                <Image source={{ uri: photoList[activePhotoIdx] }} style={styles.photoImg} />
+
+                {photoList.length > 1 && (
+                  <View style={styles.storyProgressRow}>
+                    {photoList.map((_, i) => (
+                      <View
+                        key={i}
+                        style={[
+                          styles.storyPip,
+                          i === activePhotoIdx ? styles.storyPipActive : styles.storyPipDim,
+                        ]}
+                      />
+                    ))}
+                  </View>
+                )}
+
+                {/* Left/Right Story Navigation */}
+                <TouchableOpacity
+                  style={styles.tapLeft}
+                  onPress={() => handlePrevPhoto(photoList.length)}
+                  activeOpacity={1}
+                />
+                <TouchableOpacity
+                  style={styles.tapRight}
+                  onPress={() => handleNextPhoto(photoList.length)}
+                  activeOpacity={1}
+                />
+
+                {/* Overlaid Badges */}
+                <View style={styles.photoOverlayRow}>
+                  <View style={styles.sportBadge}>
+                    <Text style={styles.sportBadgeText}>
+                      {(currentProfile.fitness_mode || 'ATHLETE').toUpperCase()}
+                    </Text>
+                  </View>
+
+                  <View style={styles.distanceBadge}>
+                    <Text style={styles.distanceBadgeText}>
+                      {currentProfile.distance ?? 3.5} KM AWAY
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })()}
+
+          {/* Profile Details Shelf */}
+          <View style={styles.profileDetails}>
+            <View style={styles.nameRow}>
+              <Text style={styles.athleteName}>{currentProfile.full_name}</Text>
+              <View style={styles.ageBubble}>
+                <Text style={styles.ageText}>{currentProfile.age ?? 25} YRS</Text>
+              </View>
+            </View>
+
+            {/* Dating & Fitness Status */}
+            {currentProfile.dating_status ? (
+              <View style={styles.statusPill}>
+                <Text style={styles.statusPillText}>{currentProfile.dating_status}</Text>
+              </View>
+            ) : null}
+
+            <View style={styles.locationLine}>
+              <Text style={styles.pinIcon}>📍</Text>
+              <Text style={styles.locationText}>
+                {(currentProfile.city || 'METRO MANILA').toUpperCase()}
+              </Text>
+            </View>
+
+            {/* Metrics Grid */}
+            <View style={styles.metricsGrid}>
+              <View style={styles.metricCell}>
+                <Text style={styles.metricLabel}>PACE / FOCUS</Text>
+                <Text style={styles.metricVal}>{currentProfile.pace || '5:30 / km'}</Text>
+              </View>
+
+              <View style={styles.metricCell}>
+                <Text style={styles.metricLabel}>HEIGHT</Text>
+                <Text style={styles.metricVal}>{currentProfile.height || "5'8"}</Text>
+              </View>
+
+              <View style={styles.metricCell}>
+                <Text style={styles.metricLabel}>SCHEDULE</Text>
+                <Text style={styles.metricVal}>{currentProfile.schedule || 'Afternoons'}</Text>
+              </View>
+            </View>
+
+            {/* Bio Card */}
+            <View style={styles.bioCard}>
+              <Text style={styles.bioTitle}>TRAINING ETHOS & GOALS</Text>
+              <Text style={styles.bioBody}>
+                {currentProfile.bio ||
+                  'Looking for an accountability partner to lock in paces, share hydration breaks, and get faster together.'}
+              </Text>
+            </View>
+          </View>
+        </Animated.View>
+      ) : (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyTitle}>RADAR EXPANDED</Text>
+          <Text style={styles.emptySub}>
+            No athletes found matching {minAge}–{maxAge} yrs within {maxDistanceKm} km. Adjust
+            filters to widen your scan.
+          </Text>
+          <TouchableOpacity style={styles.refreshBtn} onPress={fetchProfiles} activeOpacity={0.8}>
+            <Text style={styles.refreshBtnText}>RE-SCAN RADAR</Text>
           </TouchableOpacity>
         </View>
       )}
+
+      {/* Control Buttons */}
+      {currentProfile && (
+        <View style={styles.controlsRow}>
+          <TouchableOpacity
+            style={[styles.swipeBtn, styles.passBtn]}
+            onPress={() => triggerSwipe('left')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.passIcon}>✕</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.swipeBtn, styles.connectBtn]}
+            onPress={() => triggerSwipe('right')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.connectIcon}>⚡</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Futuristic Interactive Radar Parameters Sheet */}
+      <Modal
+        visible={isFilterModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsFilterModalOpen(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>RADAR PARAMETERS</Text>
+            <Text style={styles.modalSub}>
+              Adjust age limits (min 3-year gap) and GPS radius to track athletes nearby.
+            </Text>
+
+            {/* Minimum Age Slider Stepper */}
+            <View style={styles.sliderControlBlock}>
+              <View style={styles.sliderHeaderRow}>
+                <Text style={styles.sliderLabel}>MINIMUM AGE (18+)</Text>
+                <Text style={styles.sliderValueText}>{minAge} YRS</Text>
+              </View>
+              <View style={styles.stepperRow}>
+                <TouchableOpacity
+                  style={styles.stepperBtn}
+                  onPress={() => handleMinAgeChange(-1)}
+                >
+                  <Text style={styles.stepperBtnText}>−</Text>
+                </TouchableOpacity>
+
+                <View style={styles.stepperBarBackground}>
+                  <View
+                    style={[
+                      styles.stepperBarFill,
+                      { width: `${((minAge - 18) / (maxAge - 3 - 18 || 1)) * 100}%` },
+                    ]}
+                  />
+                </View>
+
+                <TouchableOpacity
+                  style={styles.stepperBtn}
+                  onPress={() => handleMinAgeChange(1)}
+                >
+                  <Text style={styles.stepperBtnText}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Maximum Age Slider Stepper */}
+            <View style={styles.sliderControlBlock}>
+              <View style={styles.sliderHeaderRow}>
+                <Text style={styles.sliderLabel}>MAXIMUM AGE</Text>
+                <Text style={styles.sliderValueText}>{maxAge} YRS</Text>
+              </View>
+              <View style={styles.stepperRow}>
+                <TouchableOpacity
+                  style={styles.stepperBtn}
+                  onPress={() => handleMaxAgeChange(-1)}
+                >
+                  <Text style={styles.stepperBtnText}>−</Text>
+                </TouchableOpacity>
+
+                <View style={styles.stepperBarBackground}>
+                  <View
+                    style={[
+                      styles.stepperBarFill,
+                      { width: `${((maxAge - (minAge + 3)) / (60 - (minAge + 3))) * 100}%` },
+                    ]}
+                  />
+                </View>
+
+                <TouchableOpacity
+                  style={styles.stepperBtn}
+                  onPress={() => handleMaxAgeChange(1)}
+                >
+                  <Text style={styles.stepperBtnText}>+</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.sliderNotice}>
+                ⚡ Enforced gap: minimum 3 years between lower and upper bound.
+              </Text>
+            </View>
+
+            {/* GPS Radius Setting */}
+            <View style={styles.sliderControlBlock}>
+              <View style={styles.sliderHeaderRow}>
+                <Text style={styles.sliderLabel}>GPS PROXIMITY RADIUS</Text>
+                <Text style={styles.sliderValueText}>{maxDistanceKm} KM</Text>
+              </View>
+              <View style={styles.radiusOptionsRow}>
+                {[5, 10, 20, 35, 50].map((dist) => (
+                  <TouchableOpacity
+                    key={dist}
+                    style={[
+                      styles.radiusChip,
+                      maxDistanceKm === dist && styles.radiusChipActive,
+                    ]}
+                    onPress={() => setMaxDistanceKm(dist)}
+                  >
+                    <Text
+                      style={[
+                        styles.radiusChipText,
+                        maxDistanceKm === dist && styles.radiusChipTextActive,
+                      ]}
+                    >
+                      {dist} KM
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {/* Close / Apply */}
+            <TouchableOpacity
+              style={styles.modalApplyBtn}
+              onPress={() => setIsFilterModalOpen(false)}
+            >
+              <Text style={styles.modalApplyText}>APPLY RADAR FILTERS</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  deckRoot: {
     width: '100%',
     alignItems: 'center',
+    gap: 16,
   },
-  topControlRow: {
+  loadingBox: {
+    paddingVertical: 140,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  /* CATEGORY & RADAR CONTROLS */
+  categoryContainer: {
     flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
     width: '100%',
     gap: 8,
-    marginBottom: 10,
+    paddingHorizontal: 2,
   },
-  glassFilterBar: {
-    flex: 1,
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 16,
-    padding: 3,
-    justifyContent: 'space-between',
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
-  },
-  filterSegment: {
-    flex: 1,
-    paddingVertical: 7,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  filterSegmentActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-  },
-  filterLabel: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.45)',
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-  },
-  filterLabelActive: {
-    color: '#FFFFFF',
-    fontWeight: '800',
-  },
-  ageDrawerBtn: {
+  categoryScrollContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 16,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    gap: 8,
+    paddingRight: 6,
   },
-  ageDrawerBtnActive: {
-    backgroundColor: 'rgba(255, 59, 48, 0.2)',
-    borderColor: '#FF3B30',
-  },
-  ageDrawerIcon: {
-    fontSize: 10,
-  },
-  ageDrawerLabel: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 9.5,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  drawerContainer: {
-    width: '100%',
-    overflow: 'hidden',
-  },
-  drawerInner: {
-    backgroundColor: 'rgba(16, 18, 25, 0.85)',
+  categoryPill: {
+    backgroundColor: 'rgba(16, 22, 34, 0.85)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
+  },
+  categoryPillActive: {
+    backgroundColor: 'rgba(0, 240, 255, 0.16)',
+    borderColor: '#00F0FF',
+  },
+  categoryText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  categoryTextActive: {
+    color: '#00F0FF',
+    fontWeight: '900',
+  },
+  filterTriggerPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(16, 22, 34, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
+  },
+  filterTriggerBolt: {
+    color: '#FFB800',
+    fontSize: 12,
+  },
+  filterTriggerText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+
+  /* VELOCITY CARD */
+  cardWrapper: {
+    width: '100%',
+    backgroundColor: 'rgba(15, 20, 32, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 28,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.55,
+    shadowRadius: 28,
+    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(35px)' } : {}),
+  },
+  photoViewport: {
+    width: '100%',
+    aspectRatio: 0.96,
+    position: 'relative',
+    backgroundColor: '#030508',
+  },
+  photoImg: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  storyProgressRow: {
+    position: 'absolute',
+    top: 12,
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
     gap: 8,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(30px)' } : {}),
+    zIndex: 10,
+  },
+  storyPip: {
+    flex: 1,
+    height: 3.5,
+    borderRadius: 2,
+  },
+  storyPipActive: {
+    backgroundColor: '#00F0FF',
+    shadowColor: '#00F0FF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 5,
+  },
+  storyPipDim: {
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  tapLeft: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: '38%',
+    zIndex: 5,
+  },
+  tapRight: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: '38%',
+    zIndex: 5,
+  },
+  photoOverlayRow: {
+    position: 'absolute',
+    bottom: 14,
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 6,
+  },
+  sportBadge: {
+    backgroundColor: '#FF3B30',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  sportBadgeText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFF',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  distanceBadge: {
+    backgroundColor: 'rgba(3, 7, 18, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.5)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(16px)' } : {}),
+  },
+  distanceBadgeText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+
+  /* DETAILS */
+  profileDetails: {
+    padding: 20,
+    gap: 14,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  athleteName: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFFFFF',
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  ageBubble: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+  },
+  ageText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  statusPill: {
+    backgroundColor: 'rgba(255, 59, 48, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.35)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+  },
+  statusPillText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FF7B72',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  locationLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pinIcon: {
+    fontSize: 14,
+  },
+  locationText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.55)',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  metricsGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  metricCell: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+  },
+  metricLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  metricVal: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  bioCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    padding: 14,
+    gap: 6,
+  },
+  bioTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  bioBody: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+
+  /* DECISION STAMPS */
+  decisionStamp: {
+    position: 'absolute',
+    top: 40,
+    zIndex: 30,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    borderWidth: 2,
+  },
+  stampRight: {
+    right: 20,
+    borderColor: '#00F0FF',
+    backgroundColor: 'rgba(0, 240, 255, 0.2)',
+    transform: [{ rotate: '12deg' }],
+  },
+  stampRightText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 1.4,
+  },
+  stampLeft: {
+    left: 20,
+    borderColor: '#FF3B30',
+    backgroundColor: 'rgba(255, 59, 48, 0.2)',
+    transform: [{ rotate: '-12deg' }],
+  },
+  stampLeftText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FF3B30',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 1.4,
+  },
+
+  /* CONTROLS */
+  controlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 32,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  swipeBtn: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+  },
+  passBtn: {
+    backgroundColor: 'rgba(255, 59, 48, 0.1)',
+    borderColor: 'rgba(255, 59, 48, 0.45)',
+  },
+  passIcon: {
+    color: '#FF3B30',
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+  connectBtn: {
+    backgroundColor: 'rgba(0, 240, 255, 0.1)',
+    borderColor: 'rgba(0, 240, 255, 0.55)',
+  },
+  connectIcon: {
+    color: '#00F0FF',
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+
+  emptyCard: {
+    paddingVertical: 100,
+    alignItems: 'center',
+    gap: 12,
+  },
+  emptyTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+  },
+  emptySub: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 13,
+    textAlign: 'center',
+    maxWidth: 280,
+    lineHeight: 18,
+  },
+  refreshBtn: {
+    marginTop: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 14,
+  },
+  refreshBtnText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  /* RADAR PARAMETERS MODAL */
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: 'rgba(16, 22, 34, 0.95)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+    borderRadius: 26,
+    padding: 22,
+    gap: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.5,
+    shadowRadius: 28,
+  },
+  modalTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 1.6,
+  },
+  modalSub: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 12.5,
+    lineHeight: 18,
+  },
+  sliderControlBlock: {
+    gap: 8,
+    marginTop: 4,
   },
   sliderHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  drawerHeading: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.45)',
-    fontSize: 9,
+  sliderLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.75)',
+    fontSize: 12,
     fontWeight: '800',
-    letterSpacing: 1.2,
+    letterSpacing: 0.8,
   },
-  sliderValBadge: {
-    backgroundColor: 'rgba(255, 59, 48, 0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 59, 48, 0.4)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  sliderValText: {
-    fontFamily: APPLE_FONT,
-    color: '#FF4B2B',
-    fontSize: 10.5,
-    fontWeight: '800',
-  },
-  presetRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginVertical: 2,
-  },
-  presetChip: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  presetChipText: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  sliderBox: {
-    gap: 6,
-    paddingVertical: 4,
-  },
-  trackBackground: {
-    height: 6,
-    width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 3,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  trackHighlight: {
-    position: 'absolute',
-    height: '100%',
-    backgroundColor: '#FF3B30',
-    borderRadius: 3,
-  },
-  individualSliderRow: {
-    gap: 2,
-  },
-  handleLabel: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontSize: 9.5,
-    fontWeight: '700',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  toggleTitle: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  toggleSub: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.4)',
-    fontSize: 9,
-    marginTop: 1,
-    lineHeight: 12,
-  },
-  switchTouchTarget: {
-    padding: 4,
-  },
-  switchTrack: {
-    width: 44,
-    height: 24,
-    borderRadius: 12,
-    justifyContent: 'center',
-  },
-  switchThumb: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#FFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-  },
-  expandedNoticePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 240, 255, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 240, 255, 0.25)',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 12,
-    marginBottom: 8,
-    gap: 6,
-  },
-  expandedNoticeDot: {
+  sliderValueText: {
+    fontFamily: SYSTEM_FONT,
     color: '#00F0FF',
     fontSize: 14,
+    fontWeight: '900',
   },
-  expandedNoticeText: {
-    fontFamily: APPLE_FONT,
-    color: '#00F0FF',
-    fontSize: 9.5,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  loadingBox: {
-    padding: 50,
-    alignItems: 'center',
-    gap: 12,
-  },
-  radarText: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-  },
-  deckViewport: {
-    width: '100%',
-    position: 'relative',
-    alignItems: 'center',
-  },
-  underlyingGlassCard: {
-    position: 'absolute',
-    top: 10,
-    width: '98%',
-    borderRadius: 24,
-    backgroundColor: 'rgba(16, 18, 25, 0.45)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-    height: 520,
-    zIndex: 1,
-  },
-  underlyingCardPhotoPlaceholder: {
-    width: '100%',
-    aspectRatio: 4 / 5,
-    backgroundColor: '#050608',
-    borderRadius: 20,
-  },
-  glassCard: {
-    width: '100%',
-    backgroundColor: 'rgba(20, 22, 32, 0.65)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    borderRadius: 24,
-    overflow: 'hidden',
-    zIndex: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.5,
-    shadowRadius: 30,
-    elevation: 12,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(30px)' } : {}),
-  },
-
-  /* SHOWCASE 4:5 PORTRAIT VIEWPORT */
-  showcasePhotoViewport: {
-    width: '100%',
-    aspectRatio: 4 / 5,
-    backgroundColor: '#050608',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  showcaseMainPhoto: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-    ...(Platform.OS === 'web' ? { objectPosition: 'center top' } : {}),
-  },
-  vignetteOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.25)',
-  },
-  photoDotsRow: {
-    position: 'absolute',
-    top: 12,
-    left: 14,
-    right: 14,
+  stepperRow: {
     flexDirection: 'row',
-    gap: 6,
-    zIndex: 30,
+    alignItems: 'center',
+    gap: 10,
   },
-  photoDot: {
+  stepperBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperBtnText: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  stepperBarBackground: {
     flex: 1,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+    height: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 3,
+    overflow: 'hidden',
   },
-  photoDotActive: {
+  stepperBarFill: {
+    height: '100%',
     backgroundColor: '#00F0FF',
   },
-  tapHitboxLayer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: 'row',
-    zIndex: 20,
-  },
-  tapSide: {
-    flex: 1,
-    height: '100%',
-  },
-  hudOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: 16,
-    paddingTop: 40,
-    zIndex: 25,
-    pointerEvents: 'none',
-  },
-  hudTopBadges: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  glassBadgeNeon: {
-    backgroundColor: 'rgba(255, 59, 48, 0.85)',
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-  },
-  badgeNeonText: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 9.5,
-    fontWeight: '800',
-    letterSpacing: 0.8,
-  },
-  glassBadgeMuted: {
-    backgroundColor: 'rgba(10, 12, 18, 0.8)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 240, 255, 0.3)',
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-  },
-  badgeMutedText: {
-    fontFamily: APPLE_FONT,
-    color: '#00F0FF',
-    fontSize: 9.5,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  hudNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  nameText: {
-    fontFamily: APPLE_FONT,
-    fontSize: 22,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-    color: '#FFFFFF',
-  },
-  agePill: {
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  agePillText: {
-    fontFamily: APPLE_FONT,
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  locationCity: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.65)',
+  sliderNotice: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.4)',
     fontSize: 10.5,
-    fontWeight: '600',
+    lineHeight: 14,
     marginTop: 2,
   },
-  cardBody: {
-    padding: 16,
-    gap: 12,
-  },
-  metricsCapsuleRow: {
+  radiusOptionsRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
+    flexWrap: 'wrap',
+    marginTop: 4,
   },
-  detailCapsule: {
-    flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-    gap: 2,
-  },
-  capsuleLabel: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.35)',
-    fontSize: 8.5,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  capsuleValue: {
-    fontFamily: APPLE_FONT,
-    color: '#FFF',
-    fontSize: 11.5,
-    fontWeight: '600',
-  },
-  bioGlassCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    padding: 12,
-    gap: 4,
-  },
-  bioHeading: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.4)',
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-  },
-  bioContent: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.85)',
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  pedestalActionRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 36,
-    paddingTop: 4,
-  },
-  glassPedestal: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
+  radiusChip: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    paddingVertical: 7,
+    paddingHorizontal: 11,
+    borderRadius: 10,
   },
-  passBorder: {
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  matchGlowBorder: {
-    borderWidth: 1.5,
-    borderColor: '#FF3B30',
-    backgroundColor: 'rgba(255, 59, 48, 0.15)',
-    shadowColor: '#FF3B30',
-    shadowOpacity: 0.5,
-    shadowRadius: 15,
-  },
-  passIcon: {
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  matchIcon: {
-    fontSize: 22,
-  },
-  stampPill: {
-    position: 'absolute',
-    top: 24,
-    zIndex: 100,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 14,
-    borderWidth: 2,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
-  },
-  likeStamp: {
-    left: 20,
+  radiusChipActive: {
+    backgroundColor: 'rgba(0, 240, 255, 0.18)',
     borderColor: '#00F0FF',
-    backgroundColor: 'rgba(0, 240, 255, 0.2)',
-    transform: [{ rotate: '-12deg' }],
   },
-  passStamp: {
-    right: 20,
-    borderColor: '#FF3B30',
-    backgroundColor: 'rgba(255, 59, 48, 0.2)',
-    transform: [{ rotate: '12deg' }],
+  radiusChipText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.65)',
+    fontSize: 12,
+    fontWeight: '700',
   },
-  likeStampText: {
-    fontFamily: APPLE_FONT,
+  radiusChipTextActive: {
     color: '#00F0FF',
     fontWeight: '900',
-    fontSize: 14,
-    letterSpacing: 1.5,
   },
-  passStampText: {
-    fontFamily: APPLE_FONT,
-    color: '#FF3B30',
-    fontWeight: '900',
-    fontSize: 14,
-    letterSpacing: 1.5,
-  },
-  glassEmpty: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 24,
-    padding: 36,
-    alignItems: 'center',
-    width: '100%',
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(30px)' } : {}),
-  },
-  emptyIcon: {
-    fontSize: 34,
-    marginBottom: 8,
-  },
-  emptyTitle: {
-    fontFamily: APPLE_FONT,
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 2,
-    marginBottom: 4,
-  },
-  emptySubtitle: {
-    fontFamily: APPLE_FONT,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 12,
-    textAlign: 'center',
-    marginBottom: 18,
-    lineHeight: 17,
-  },
-  glassActionBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
+  modalApplyBtn: {
+    backgroundColor: '#00F0FF',
     borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 6,
   },
-  actionBtnText: {
-    fontFamily: APPLE_FONT,
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 11,
+  modalApplyText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#030812',
+    fontSize: 13,
+    fontWeight: '900',
     letterSpacing: 1.2,
   },
 });

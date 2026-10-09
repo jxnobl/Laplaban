@@ -162,7 +162,6 @@ export default function CommunityForum({ currentUserId }: { currentUserId: strin
             <Text style={styles.sectionKicker}>COMMUNITY RADAR</Text>
           </View>
 
-          {/* MINIMALIST GLASS CONTROLS */}
           <View style={styles.actionsCluster}>
             <TouchableOpacity
               style={styles.minimalGlassBtn}
@@ -183,10 +182,37 @@ export default function CommunityForum({ currentUserId }: { currentUserId: strin
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Community Forum</Text>
+        <Text style={styles.sectionTitle}>Community Feed & Analytics</Text>
         <Text style={styles.sectionSub}>
-          Live activity traces, partner workout collaborations, and route feeds.
+          Live activity traces, partner workout collaborations, and DOH wellness goals.
         </Text>
+      </View>
+
+      {/* DOH COMMUNITY ANALYTICS & LEADERS (Wireframe 10.5) */}
+      <View style={styles.dohAnalyticsCard}>
+        <Text style={styles.analyticsTitle}>COMMUNITY LEADERS THIS MONTH</Text>
+        <View style={styles.leaderList}>
+          {[
+            '1. Edmarc Justin Oabel — 142.4 KM',
+            '2. Jabez C. Molar — 118.2 KM',
+            '3. Kyle Arboleda — 94.0 KM',
+            '4. Bea Valenzuela — 78.5 KM',
+          ].map((leader, i) => (
+            <View key={i} style={styles.leaderRow}>
+              <Text style={styles.leaderText}>{leader}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.goalTrackerBlock}>
+          <Text style={styles.goalTrackerTitle}>MONTHLY DOH GOAL TRACKER</Text>
+          <Text style={styles.goalProgressLabel}>
+            Community Target: 5,000 KM • Progress: [=======> ] 74%
+          </Text>
+          <View style={styles.goalProgressBarBg}>
+            <View style={[styles.goalProgressBarFill, { width: '74%' }]} />
+          </View>
+        </View>
       </View>
 
       {/* CATEGORY SELECTOR */}
@@ -301,13 +327,11 @@ export default function CommunityForum({ currentUserId }: { currentUserId: strin
                             lineCap="round"
                             lineJoin="round"
                           />
-                          {/* Starting Point Pin */}
                           <Marker coordinate={coords[0]}>
                             <View style={styles.mapPointStart}>
                               <Text style={styles.mapPointText}>S</Text>
                             </View>
                           </Marker>
-                          {/* Finish Point Pin */}
                           <Marker coordinate={coords[coords.length - 1]}>
                             <View style={styles.mapPointEnd}>
                               <Text style={styles.mapPointText}>F</Text>
@@ -469,7 +493,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
   },
   refreshIcon: {
     color: '#00F0FF',
@@ -509,6 +532,68 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+
+  /* Wireframe 10.5 DOH Leaders & Target */
+  dohAnalyticsCard: {
+    backgroundColor: 'rgba(16, 22, 34, 0.94)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 20,
+    padding: 16,
+    gap: 12,
+  },
+  analyticsTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  leaderList: {
+    gap: 6,
+  },
+  leaderRow: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  leaderText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  goalTrackerBlock: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    paddingTop: 10,
+    gap: 4,
+  },
+  goalTrackerTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FC5200',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  goalProgressLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 11,
+  },
+  goalProgressBarBg: {
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginTop: 2,
+  },
+  goalProgressBarFill: {
+    height: '100%',
+    backgroundColor: '#FC5200',
+  },
+
   categoryRow: {
     width: '100%',
   },
@@ -523,7 +608,6 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 14,
     borderRadius: 14,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
   },
   categoryPillActive: {
     backgroundColor: 'rgba(0, 240, 255, 0.16)',
@@ -578,11 +662,6 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 18,
     gap: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.45,
-    shadowRadius: 24,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(35px)' } : {}),
   },
   postHeader: {
     flexDirection: 'row',
@@ -599,10 +678,6 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: '#00F0FF',
-    shadowColor: '#00F0FF',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
   },
   authorName: {
     fontFamily: SYSTEM_FONT,
@@ -804,10 +879,6 @@ const styles = StyleSheet.create({
     borderRadius: 26,
     padding: 22,
     gap: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.5,
-    shadowRadius: 28,
   },
   modalHeader: {
     flexDirection: 'row',

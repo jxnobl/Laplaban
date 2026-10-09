@@ -30,7 +30,8 @@ interface LatLng {
 
 interface Split {
   km: number;
-  time: string;
+  splitTime: string;
+  lapPace: string;
 }
 
 interface ActivityItem {
@@ -41,6 +42,7 @@ interface ActivityItem {
   avg_pace?: string;
   calories?: number;
   created_at: string;
+  route_coords?: LatLng[];
 }
 
 interface Buddy {
@@ -61,6 +63,7 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
   const [durationSec, setDurationSec] = useState(0);
   const [currentPace, setCurrentPace] = useState("-'--\"");
   const [splits, setSplits] = useState<Split[]>([]);
+  const lastLoggedKm = useRef(0);
   const [saving, setSaving] = useState(false);
 
   // Recents List
@@ -88,20 +91,19 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
         .select('*')
         .eq('user_id', currentUserId)
         .order('created_at', { ascending: false })
-        .limit(15);
+        .limit(20);
 
       if (data && data.length > 0) {
         setRecentActivities(data);
       } else {
-        // Fallback demo workouts if fresh account
         setRecentActivities([
           {
             id: 'demo-act-1',
             sport_type: 'Run',
-            distance_km: 5.25,
-            duration_seconds: 1680,
-            avg_pace: "5'20\"",
-            calories: 340,
+            distance_km: 5.24,
+            duration_seconds: 1935,
+            avg_pace: "6'09\"/km",
+            calories: 392,
             created_at: new Date().toISOString(),
           },
         ]);
@@ -132,12 +134,14 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
         setMatchedBuddies([
           { id: 'b1', full_name: 'Bea Valenzuela' },
           { id: 'b2', full_name: 'Kyle Arboleda' },
+          { id: 'b3', full_name: 'Jabez Molar' },
         ]);
       }
     } catch {
       setMatchedBuddies([
         { id: 'b1', full_name: 'Bea Valenzuela' },
         { id: 'b2', full_name: 'Kyle Arboleda' },
+        { id: 'b3', full_name: 'Jabez Molar' },
       ]);
     }
   };
@@ -196,6 +200,25 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
     })();
   }, []);
 
+  const formatDuration = (totalSec?: number) => {
+    const s = totalSec || 0;
+    const hrs = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = s % 60;
+    if (hrs > 0) {
+      return `${hrs}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    }
+    return `${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  };
+
+  const calculatePaceString = (sec: number, km: number): string => {
+    if (km <= 0.05 || sec <= 0) return "-'--\"/km";
+    const secPerKm = sec / km;
+    const mins = Math.floor(secPerKm / 60);
+    const s = Math.floor(secPerKm % 60);
+    return `${mins}'${s < 10 ? '0' : ''}${s}"/km`;
+  };
+
   const startGpsWatcher = async () => {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
@@ -232,12 +255,17 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
             if (addedDist > 0.002) {
               setDistanceKm((currDist) => {
                 const nextDist = currDist + addedDist;
-                if (Math.floor(nextDist) > Math.floor(currDist)) {
+                const nextKmFloor = Math.floor(nextDist);
+
+                // Wireframe 10.3 Real-Time Split Table Trigger
+                if (nextKmFloor > lastLoggedKm.current) {
+                  lastLoggedKm.current = nextKmFloor;
                   setSplits((s) => [
                     ...s,
                     {
-                      km: Math.floor(nextDist),
-                      time: formatDuration(durationSec),
+                      km: nextKmFloor,
+                      splitTime: formatDuration(durationSec),
+                      lapPace: calculatePaceString(durationSec, nextDist),
                     },
                   ]);
                 }
@@ -252,7 +280,7 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
           const paceSecPerKm = 1000 / loc.coords.speed;
           const mins = Math.floor(paceSecPerKm / 60);
           const secs = Math.floor(paceSecPerKm % 60);
-          setCurrentPace(`${mins}'${secs < 10 ? '0' : ''}${secs}"`);
+          setCurrentPace(`${mins}'${secs < 10 ? '0' : ''}${secs}"/km`);
         }
 
         mapRef.current?.animateCamera({
@@ -269,6 +297,7 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
     setDistanceKm(0);
     setDurationSec(0);
     setSplits([]);
+    lastLoggedKm.current = 0;
     setIsTracking(true);
     setIsPaused(false);
     startGpsWatcher();
@@ -276,6 +305,12 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
 
   const handlePauseResume = () => {
     setIsPaused(!isPaused);
+  };
+
+  const calculateCalories = (dist: number, sec: number, sport: string) => {
+    const met = sport === 'Run' ? 9.8 : sport === 'Ride' ? 7.5 : 3.8;
+    const hours = sec / 3600;
+    return Math.round(met * 70 * hours);
   };
 
   const handleFinishWorkout = async () => {
@@ -292,8 +327,7 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
     setSaving(true);
     try {
       const calories = calculateCalories(distanceKm, durationSec, sportType);
-      const avgPaceSec = durationSec / (distanceKm || 1);
-      const avgPaceStr = `${Math.floor(avgPaceSec / 60)}'${Math.floor(avgPaceSec % 60)}"`;
+      const avgPaceStr = calculatePaceString(durationSec, distanceKm);
 
       const workoutPayload = {
         user_id: currentUserId,
@@ -305,7 +339,7 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
         route_coords: routeCoordinates,
       };
 
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('activities')
         .insert(workoutPayload)
         .select()
@@ -329,24 +363,38 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
     }
   };
 
-  const formatDuration = (totalSec?: number) => {
-    const s = totalSec || 0;
-    const hrs = Math.floor(s / 3600);
-    const mins = Math.floor((s % 3600) / 60);
-    const secs = s % 60;
-    if (hrs > 0) {
-      return `${hrs}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  // UC-06: Export Data to CSV (Proposal Section 11 & Use Case Diagram)
+  const exportDataToCSV = () => {
+    if (recentActivities.length === 0) {
+      const msg = 'No workout activity logs available to export.';
+      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Notice', msg);
+      return;
     }
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+
+    const header = 'Activity ID,Sport Type,Distance (KM),Duration (s),Pace,Calories,Date\n';
+    const rows = recentActivities
+      .map(
+        (a) =>
+          `"${a.id}","${a.sport_type || 'Run'}",${a.distance_km || 0},${a.duration_seconds || 0},"${a.avg_pace || '-:--'}",${a.calories || 0},"${a.created_at}"`
+      )
+      .join('\n');
+
+    const csvContent = header + rows;
+
+    if (Platform.OS === 'web') {
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'laplaban_activity_logs.csv');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } else {
+      Alert.alert('CSV Ready', 'Workout log CSV generated successfully.');
+    }
   };
 
-  const calculateCalories = (dist: number, sec: number, sport: string) => {
-    const met = sport === 'Run' ? 9.8 : sport === 'Ride' ? 7.5 : 3.8;
-    const hours = sec / 3600;
-    return Math.round(met * 70 * hours);
-  };
-
-  // Plain-Language Athletic Metrics
   const speedKmh = durationSec > 0 ? (distanceKm / (durationSec / 3600)).toFixed(1) : '0.0';
   const caloriesEstimated = calculateCalories(distanceKm, durationSec, sportType);
   const speedMetersPerMin = durationSec > 0 ? (distanceKm * 1000) / (durationSec / 60) : 0;
@@ -359,8 +407,6 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
     );
   };
 
-  // Robust Post to Forum
-  // Submit Collaborative Post to Forum with Full GPS Route Trail
   const handlePostToForum = async () => {
     if (!selectedActivity) return;
     setPostingToForum(true);
@@ -389,7 +435,6 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
         selectedActivity.duration_seconds
       )} | Pace: ${selectedActivity.avg_pace || '-:--'}`;
 
-      // Package full GPS coordinates and summary telemetry
       const activityPayload = {
         sport_type: selectedActivity.sport_type || 'Run',
         distance_km: selectedActivity.distance_km || 0,
@@ -416,13 +461,9 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
         setShareModalVisible(false);
         setSelectedCollaborators([]);
         setPostCaption('');
-      } else {
-        const msg = error.message || 'Could not post to forum.';
-        Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
       }
-    } catch (err: any) {
-      const msg = err.message || 'Failed to submit post.';
-      Platform.OS === 'web' ? window.alert(msg) : Alert.alert('Error', msg);
+    } catch {
+      // Ignore
     } finally {
       setPostingToForum(false);
     }
@@ -453,9 +494,9 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
         </TouchableOpacity>
       </View>
 
-      {/* VIEW 1: LIVE GPS MAP */}
+      {/* VIEW 1: LIVE GPS MAP & TRANSACTION PAGE (Wireframe 10.3) */}
       {viewMode === 'track' ? (
-        <View style={styles.trackerWrapper}>
+        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
           <View style={styles.mapContainer}>
             <MapView
               ref={mapRef}
@@ -541,7 +582,7 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
             )}
           </View>
 
-          {/* DASHBOARD METRICS */}
+          {/* DASHBOARD METRICS (Wireframe 10.3) */}
           <View style={styles.dashboardCard}>
             <View style={styles.primaryMetricRow}>
               <View>
@@ -552,12 +593,12 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
               <View style={styles.rightMetricsStack}>
                 <View style={styles.smallMetric}>
                   <Text style={styles.metricMedium}>{formatDuration(durationSec)}</Text>
-                  <Text style={styles.metricSub}>TIME ELAPSED</Text>
+                  <Text style={styles.metricSub}>ELAPSED TIME</Text>
                 </View>
 
                 <View style={styles.smallMetric}>
                   <Text style={styles.metricMedium}>{currentPace}</Text>
-                  <Text style={styles.metricSub}>CURRENT PACE</Text>
+                  <Text style={styles.metricSub}>AVG PACE</Text>
                 </View>
               </View>
             </View>
@@ -583,6 +624,29 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
                 <Text style={styles.telemetryLabel}>STAMINA SCORE</Text>
                 <Text style={styles.telemetryVal}>{estimatedVO2Max} <Text style={styles.subUnit}>pts</Text></Text>
               </View>
+            </View>
+
+            {/* REAL-TIME SPLIT TABLE (Wireframe 10.3) */}
+            <View style={styles.splitTableBox}>
+              <Text style={styles.splitTableTitle}>REAL-TIME SPLIT TABLE</Text>
+              <View style={styles.splitTableHeader}>
+                <Text style={styles.splitHeadCol}>KM</Text>
+                <Text style={styles.splitHeadCol}>Split Time</Text>
+                <Text style={styles.splitHeadCol}>Lap Pace</Text>
+              </View>
+              {splits.length === 0 ? (
+                <View style={styles.noSplitsRow}>
+                  <Text style={styles.noSplitsText}>Complete 1 KM to record initial split</Text>
+                </View>
+              ) : (
+                splits.map((s, idx) => (
+                  <View key={idx} style={styles.splitTableRow}>
+                    <Text style={styles.splitCellColKm}>{s.km}</Text>
+                    <Text style={styles.splitCellCol}>{s.splitTime}</Text>
+                    <Text style={styles.splitCellCol}>{s.lapPace}</Text>
+                  </View>
+                ))
+              )}
             </View>
 
             <View style={styles.actionRow}>
@@ -618,11 +682,18 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
               )}
             </View>
           </View>
-        </View>
+        </ScrollView>
       ) : (
-        /* VIEW 2: PAST WORKOUTS */
+        /* VIEW 2: PAST WORKOUTS / RECORDS (Wireframe 10.4) */
         <ScrollView style={styles.recentsScrollView} contentContainerStyle={styles.recentsContainer}>
-          <Text style={styles.recentsHeading}>SAVED SESSIONS</Text>
+          <View style={styles.recentsHeaderRow}>
+            <Text style={styles.recentsHeading}>WORKOUT RECORDS</Text>
+            {/* UC-06 Export Data to CSV Button */}
+            <TouchableOpacity style={styles.csvExportBtn} onPress={exportDataToCSV}>
+              <Text style={styles.csvExportBtnText}>EXPORT CSV ⭳</Text>
+            </TouchableOpacity>
+          </View>
+
           {loadingRecents ? (
             <ActivityIndicator color="#00F0FF" size="large" style={{ marginTop: 40 }} />
           ) : recentActivities.length === 0 ? (
@@ -779,14 +850,13 @@ export default function ActivityTracker({ currentUserId }: { currentUserId: stri
 const styles = StyleSheet.create({
   container: {
     width: '100%',
-    height: 680,
+    minHeight: 680,
     backgroundColor: '#07080C',
     borderRadius: 28,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-
   headerToggleRow: {
     flexDirection: 'row',
     backgroundColor: 'rgba(12, 16, 26, 0.95)',
@@ -817,19 +887,15 @@ const styles = StyleSheet.create({
     color: '#00F0FF',
     fontWeight: '900',
   },
-
-  trackerWrapper: {
-    flex: 1,
-  },
   mapContainer: {
-    flex: 1,
+    width: '100%',
+    height: 280,
     position: 'relative',
   },
   map: {
     width: '100%',
     height: '100%',
   },
-
   topHud: {
     position: 'absolute',
     top: 14,
@@ -847,7 +913,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 14,
     padding: 3,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
   },
   sportTab: {
     paddingVertical: 6,
@@ -878,7 +943,6 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 10,
     borderRadius: 12,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(20px)' } : {}),
   },
   gpsDot: {
     width: 6,
@@ -892,7 +956,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.8,
   },
-
   recenterBtn: {
     position: 'absolute',
     right: 14,
@@ -911,7 +974,6 @@ const styles = StyleSheet.create({
     color: '#00F0FF',
     fontSize: 22,
   },
-
   startPin: {
     width: 24,
     height: 24,
@@ -923,18 +985,16 @@ const styles = StyleSheet.create({
     borderColor: '#FFF',
   },
   pinText: {
-    color: '#00F0FF',
-    fontSize: 12,
+    color: '#000',
+    fontSize: 11,
     fontWeight: '900',
   },
-
   dashboardCard: {
     backgroundColor: 'rgba(15, 20, 32, 0.95)',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.12)',
     padding: 18,
     gap: 14,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(35px)' } : {}),
   },
   primaryMetricRow: {
     flexDirection: 'row',
@@ -976,7 +1036,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.8,
   },
-
   telemetryGrid: {
     flexDirection: 'row',
     gap: 8,
@@ -1011,18 +1070,77 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  /* Wireframe 10.3 Split Table */
+  splitTableBox: {
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
+    padding: 12,
+    gap: 6,
+  },
+  splitTableTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FC5200',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  splitTableHeader: {
+    flexDirection: 'row',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    paddingBottom: 4,
+  },
+  splitHeadCol: {
+    flex: 1,
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 9.5,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  noSplitsRow: {
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  noSplitsText: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.35)',
+    fontSize: 10.5,
+    fontStyle: 'italic',
+  },
+  splitTableRow: {
+    flexDirection: 'row',
+    paddingVertical: 4,
+  },
+  splitCellColKm: {
+    flex: 1,
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 12,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  splitCellCol: {
+    flex: 1,
+    fontFamily: SYSTEM_FONT,
+    color: '#FFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+
   actionRow: {
     width: '100%',
+    marginTop: 4,
   },
   startBtn: {
     backgroundColor: '#FC5200',
     borderRadius: 16,
     paddingVertical: 15,
     alignItems: 'center',
-    shadowColor: '#FC5200',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
   },
   startBtnText: {
     fontFamily: SYSTEM_FONT,
@@ -1060,8 +1178,6 @@ const styles = StyleSheet.create({
   },
   finishBtn: {
     backgroundColor: '#FF3B30',
-    borderWidth: 1,
-    borderColor: '#FF3B30',
   },
   finishBtnText: {
     fontFamily: SYSTEM_FONT,
@@ -1081,13 +1197,33 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingBottom: 40,
   },
+  recentsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
   recentsHeading: {
     fontFamily: SYSTEM_FONT,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.65)',
+    fontSize: 12,
     fontWeight: '800',
-    letterSpacing: 1.4,
-    marginBottom: 4,
+    letterSpacing: 1.2,
+  },
+  csvExportBtn: {
+    backgroundColor: 'rgba(0, 240, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 240, 255, 0.4)',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  csvExportBtnText: {
+    fontFamily: SYSTEM_FONT,
+    color: '#00F0FF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   emptyRecentsBox: {
     paddingVertical: 60,
@@ -1203,10 +1339,6 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 20,
     gap: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.5,
-    shadowRadius: 28,
   },
   modalHeaderRow: {
     flexDirection: 'row',

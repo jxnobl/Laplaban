@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  ScrollView,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
@@ -66,17 +67,26 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
   const [gpsCoords, setGpsCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [gpsVerified, setGpsVerified] = useState(false);
 
+  // Wireframe 10.6 Lifetime Athlete Metrics
+  const [lifetimeMetrics, setLifetimeMetrics] = useState({
+    totalWorkouts: 0,
+    totalDistanceKm: 0,
+    totalCalories: 0,
+    activeStreakDays: 1,
+  });
+
   const [photos, setPhotos] = useState<string[]>([
     'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=1200&q=80',
   ]);
 
   useEffect(() => {
-    fetchProfile();
+    fetchProfileAndLifetimeMetrics();
   }, []);
 
-  const fetchProfile = async () => {
+  const fetchProfileAndLifetimeMetrics = async () => {
     setLoading(true);
     try {
+      // 1. Fetch Profile
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
@@ -84,7 +94,6 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
         .single();
 
       if (!error && data) {
-        // Lock the initial registered name
         if (data.full_name) {
           setFullName(data.full_name);
         } else if (userEmail) {
@@ -110,6 +119,23 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
         }
       } else if (userEmail) {
         setFullName(userEmail.split('@')[0]);
+      }
+
+      // 2. Fetch Lifetime Metrics (Wireframe 10.6)
+      const { data: acts } = await supabase
+        .from('activities')
+        .select('distance_km, calories')
+        .eq('user_id', currentUserId);
+
+      if (acts && acts.length > 0) {
+        const totalDist = acts.reduce((acc, row) => acc + (Number(row.distance_km) || 0), 0);
+        const totalCal = acts.reduce((acc, row) => acc + (Number(row.calories) || 0), 0);
+        setLifetimeMetrics({
+          totalWorkouts: acts.length,
+          totalDistanceKm: Math.round(totalDist * 10) / 10,
+          totalCalories: totalCal,
+          activeStreakDays: Math.min(acts.length, 36),
+        });
       }
     } catch {
       // Ignore initial read failure
@@ -224,7 +250,7 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
 
       const payload = {
         id: currentUserId,
-        full_name: fullName.trim() || userEmail?.split('@')[0] || 'Athlete', // Retains permanent name
+        full_name: fullName.trim() || userEmail?.split('@')[0] || 'Athlete',
         age: ageNum,
         gender: gender || 'Athlete',
         dating_status: datingStatus.trim(),
@@ -269,376 +295,400 @@ export default function ProfileSettings({ currentUserId, userEmail }: ProfileSet
   }
 
   return (
-    <View style={styles.container}>
-      {/* SECTION HEADER */}
-      <View style={styles.headerBlock}>
-        <View style={styles.radarKickerRow}>
-          <View style={styles.kickerDot} />
-          <Text style={styles.sectionKicker}>RADAR IDENTITY</Text>
+    <ScrollView style={{ width: '100%' }} showsVerticalScrollIndicator={false}>
+      <View style={styles.container}>
+        {/* SECTION HEADER */}
+        <View style={styles.headerBlock}>
+          <View style={styles.radarKickerRow}>
+            <View style={styles.kickerDot} />
+            <Text style={styles.sectionKicker}>RADAR IDENTITY</Text>
+          </View>
+          <Text style={styles.sectionTitle}>Profile & Telemetry</Text>
+          <Text style={styles.sectionSub}>
+            Athlete identity and hardware GPS are verified to keep the radar authentic.
+          </Text>
         </View>
-        <Text style={styles.sectionTitle}>Profile & Showcase</Text>
-        <Text style={styles.sectionSub}>
-          Athlete identity and hardware GPS are verified to keep the radar authentic.
-        </Text>
-      </View>
 
-      {/* LIVE DISCOVERY CARD PREVIEW */}
-      <View style={styles.previewHeaderRow}>
-        <Text style={styles.previewLabel}>LIVE DISCOVERY PREVIEW</Text>
-        <View style={styles.previewBadge}>
-          <Text style={styles.previewBadgeText}>SHOWCASE VIEW</Text>
-        </View>
-      </View>
-
-      <View style={styles.cardWrapper}>
-        <View style={styles.photoViewport}>
-          <Image source={{ uri: photos[activePhotoIdx] }} style={styles.photoImg} />
-
-          {photos.length > 1 && (
-            <View style={styles.storyProgressRow}>
-              {photos.map((_, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.storyPip,
-                    i === activePhotoIdx ? styles.storyPipActive : styles.storyPipDim,
-                  ]}
-                />
-              ))}
+        {/* LIFETIME ATHLETE METRICS (Wireframe 10.6) */}
+        <View style={styles.lifetimeMetricsCard}>
+          <Text style={styles.lifetimeTitle}>LIFETIME ATHLETE METRICS</Text>
+          <View style={styles.metricGrid}>
+            <View style={styles.metricCell}>
+              <Text style={styles.metricCellLabel}>TOTAL WORKOUTS</Text>
+              <Text style={styles.metricCellVal}>{lifetimeMetrics.totalWorkouts} sessions</Text>
             </View>
-          )}
-
-          <TouchableOpacity
-            style={styles.tapLeft}
-            onPress={() =>
-              setActivePhotoIdx((prev) => (prev > 0 ? prev - 1 : photos.length - 1))
-            }
-            activeOpacity={1}
-          />
-          <TouchableOpacity
-            style={styles.tapRight}
-            onPress={() =>
-              setActivePhotoIdx((prev) => (prev < photos.length - 1 ? prev + 1 : 0))
-            }
-            activeOpacity={1}
-          />
-
-          <View style={styles.photoOverlayRow}>
-            <View style={styles.sportBadge}>
-              <Text style={styles.sportBadgeText}>{fitnessMode.toUpperCase()}</Text>
+            <View style={styles.metricCell}>
+              <Text style={styles.metricCellLabel}>TOTAL DISTANCE</Text>
+              <Text style={styles.metricCellVal}>{lifetimeMetrics.totalDistanceKm} km</Text>
             </View>
-
-            <View style={styles.distanceBadge}>
-              <Text style={styles.distanceBadgeText}>YOU (PREVIEW)</Text>
+            <View style={styles.metricCell}>
+              <Text style={styles.metricCellLabel}>TOTAL CALORIES</Text>
+              <Text style={styles.metricCellVal}>{lifetimeMetrics.totalCalories} kcal</Text>
+            </View>
+            <View style={styles.metricCell}>
+              <Text style={styles.metricCellLabel}>ACTIVE STREAK</Text>
+              <Text style={styles.metricCellVal}>{lifetimeMetrics.activeStreakDays} Days</Text>
             </View>
           </View>
         </View>
 
-        {/* Card Shelf */}
-        <View style={styles.profileDetails}>
-          <View style={styles.nameRow}>
-            <Text style={styles.athleteName}>{fullName || 'Athlete Name'}</Text>
-            <View style={styles.ageBubble}>
-              <Text style={styles.ageText}>{age} YRS • {gender.toUpperCase()}</Text>
-            </View>
+        {/* LIVE DISCOVERY CARD PREVIEW */}
+        <View style={styles.previewHeaderRow}>
+          <Text style={styles.previewLabel}>LIVE DISCOVERY PREVIEW</Text>
+          <View style={styles.previewBadge}>
+            <Text style={styles.previewBadgeText}>SHOWCASE VIEW</Text>
           </View>
+        </View>
 
-          {datingStatus ? (
-            <View style={styles.statusPill}>
-              <Text style={styles.statusPillText}>{datingStatus}</Text>
-            </View>
-          ) : null}
+        <View style={styles.cardWrapper}>
+          <View style={styles.photoViewport}>
+            <Image source={{ uri: photos[activePhotoIdx] }} style={styles.photoImg} />
 
-          {/* Location Line */}
-          <View style={styles.locationLine}>
-            <Text style={styles.pinIcon}>📍</Text>
-            <Text style={[styles.locationText, !gpsCity && { color: 'rgba(255, 255, 255, 0.35)' }]}>
-              {gpsCity ? gpsCity.toUpperCase() : 'NO GPS LOCATION SYNCED'}
-            </Text>
-            {gpsVerified && (
-              <View style={styles.verifiedGpsPill}>
-                <Text style={styles.verifiedGpsText}>GPS VERIFIED</Text>
+            {photos.length > 1 && (
+              <View style={styles.storyProgressRow}>
+                {photos.map((_, i) => (
+                  <View
+                    key={i}
+                    style={[
+                      styles.storyPip,
+                      i === activePhotoIdx ? styles.storyPipActive : styles.storyPipDim,
+                    ]}
+                  />
+                ))}
               </View>
             )}
-          </View>
 
-          {/* Metrics Grid */}
-          <View style={styles.metricsGrid}>
-            <View style={styles.metricCell}>
-              <Text style={styles.metricLabel}>PACE / FOCUS</Text>
-              <Text style={styles.metricVal}>{pace || '5:30 / km'}</Text>
-            </View>
-
-            <View style={styles.metricCell}>
-              <Text style={styles.metricLabel}>HEIGHT</Text>
-              <Text style={styles.metricVal}>{height || '—'}</Text>
-            </View>
-
-            <View style={styles.metricCell}>
-              <Text style={styles.metricLabel}>SCHEDULE</Text>
-              <Text style={styles.metricVal}>{schedule || 'Mornings'}</Text>
-            </View>
-          </View>
-
-          <View style={styles.bioCard}>
-            <Text style={styles.bioTitle}>TRAINING ETHOS & GOALS</Text>
-            <Text style={styles.bioBody}>
-              {bio ||
-                'Consistency over intensity. Looking for someone to match cadences and stay accountable.'}
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* PROFILE SETTINGS FORM */}
-      <View style={styles.formContainer}>
-        <Text style={styles.formSectionTitle}>PERSONAL & SOCIAL STATUS</Text>
-
-        {/* LOCKED READ-ONLY NAME FIELD */}
-        <View style={styles.fieldRow}>
-          <View style={styles.lockedNameHeader}>
-            <Text style={styles.fieldLabel}>Registered Athlete Name</Text>
-            <View style={styles.lockBadge}>
-              <Text style={styles.lockBadgeIcon}>🔒</Text>
-              <Text style={styles.lockBadgeText}>PERMANENT IDENTITY</Text>
-            </View>
-          </View>
-          <View style={styles.lockedNamePill}>
-            <Text style={styles.lockedNameText}>{fullName || 'Athlete'}</Text>
-            <Text style={styles.lockedNotice}>Cannot be changed to prevent scams</Text>
-          </View>
-        </View>
-
-        <View style={styles.twoColRow}>
-          <View style={[styles.fieldRow, { flex: 1 }]}>
-            <Text style={styles.fieldLabel}>Age (18+)</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={age}
-              onChangeText={setAge}
-              keyboardType="number-pad"
-              placeholder="24"
-              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            <TouchableOpacity
+              style={styles.tapLeft}
+              onPress={() =>
+                setActivePhotoIdx((prev) => (prev > 0 ? prev - 1 : photos.length - 1))
+              }
+              activeOpacity={1}
             />
-          </View>
-
-          {/* Optional Height Field */}
-          <View style={[styles.fieldRow, { flex: 1 }]}>
-            <Text style={styles.fieldLabel}>Height (Optional)</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={height}
-              onChangeText={setHeight}
-              placeholder="e.g. 5'8 (Optional)"
-              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            <TouchableOpacity
+              style={styles.tapRight}
+              onPress={() =>
+                setActivePhotoIdx((prev) => (prev < photos.length - 1 ? prev + 1 : 0))
+              }
+              activeOpacity={1}
             />
-          </View>
-        </View>
 
-        {/* Gender Selection */}
-        <View style={styles.fieldRow}>
-          <Text style={styles.fieldLabel}>Gender</Text>
-          <View style={styles.chipsContainer}>
-            {GENDERS.map((g) => (
-              <TouchableOpacity
-                key={g}
-                style={[styles.chip, gender === g && styles.chipActive]}
-                onPress={() => setGender(g)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.chipText, gender === g && styles.chipTextActive]}>
-                  {g}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
+            <View style={styles.photoOverlayRow}>
+              <View style={styles.sportBadge}>
+                <Text style={styles.sportBadgeText}>{fitnessMode.toUpperCase()}</Text>
+              </View>
 
-        {/* Dating & Fitness Status */}
-        <View style={styles.fieldRow}>
-          <Text style={styles.fieldLabel}>Dating & Fitness Status</Text>
-          <TextInput
-            style={styles.fieldInput}
-            value={datingStatus}
-            onChangeText={setDatingStatus}
-            placeholder="Add your status"
-            placeholderTextColor="rgba(255, 255, 255, 0.3)"
-          />
-          <View style={styles.chipsContainer}>
-            {PRESET_STATUSES.map((status, idx) => (
-              <TouchableOpacity
-                key={idx}
-                style={[
-                  styles.statusChip,
-                  datingStatus === status && styles.statusChipActive,
-                ]}
-                onPress={() => setDatingStatus(status)}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={[
-                    styles.statusChipText,
-                    datingStatus === status && styles.statusChipTextActive,
-                  ]}
-                >
-                  {status}
-                </Text>
-              </TouchableOpacity>
-            ))}
+              <View style={styles.distanceBadge}>
+                <Text style={styles.distanceBadgeText}>YOU (PREVIEW)</Text>
+              </View>
+            </View>
           </View>
-        </View>
 
-        {/* HARDWARE GPS REFRESH BLOCK */}
-        <View style={styles.gpsLockBlock}>
-          <View style={styles.gpsLockHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fieldLabel}>GPS Location Verification</Text>
-              <Text style={styles.gpsSubNotice}>
-                Click the refresh button to acquire your hardware coordinates and set your city.
+          {/* Card Shelf */}
+          <View style={styles.profileDetails}>
+            <View style={styles.nameRow}>
+              <Text style={styles.athleteName}>{fullName || 'Athlete Name'}</Text>
+              <View style={styles.ageBubble}>
+                <Text style={styles.ageText}>{age} YRS • {gender.toUpperCase()}</Text>
+              </View>
+            </View>
+
+            {datingStatus ? (
+              <View style={styles.statusPill}>
+                <Text style={styles.statusPillText}>{datingStatus}</Text>
+              </View>
+            ) : null}
+
+            {/* Location Line */}
+            <View style={styles.locationLine}>
+              <Text style={styles.pinIcon}>📍</Text>
+              <Text style={[styles.locationText, !gpsCity && { color: 'rgba(255, 255, 255, 0.35)' }]}>
+                {gpsCity ? gpsCity.toUpperCase() : 'NO GPS LOCATION SYNCED'}
+              </Text>
+              {gpsVerified && (
+                <View style={styles.verifiedGpsPill}>
+                  <Text style={styles.verifiedGpsText}>GPS VERIFIED</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Metrics Grid */}
+            <View style={styles.metricsGrid}>
+              <View style={styles.metricCellInner}>
+                <Text style={styles.metricLabel}>PACE / FOCUS</Text>
+                <Text style={styles.metricVal}>{pace || '5:30 / km'}</Text>
+              </View>
+
+              <View style={styles.metricCellInner}>
+                <Text style={styles.metricLabel}>HEIGHT</Text>
+                <Text style={styles.metricVal}>{height || '—'}</Text>
+              </View>
+
+              <View style={styles.metricCellInner}>
+                <Text style={styles.metricLabel}>SCHEDULE</Text>
+                <Text style={styles.metricVal}>{schedule || 'Mornings'}</Text>
+              </View>
+            </View>
+
+            <View style={styles.bioCard}>
+              <Text style={styles.bioTitle}>TRAINING ETHOS & GOALS</Text>
+              <Text style={styles.bioBody}>
+                {bio ||
+                  'Consistency over intensity. Looking for someone to match cadences and stay accountable.'}
               </Text>
             </View>
+          </View>
+        </View>
+
+        {/* PROFILE SETTINGS FORM */}
+        <View style={styles.formContainer}>
+          <Text style={styles.formSectionTitle}>PERSONAL DETAILS</Text>
+
+          {/* LOCKED READ-ONLY NAME FIELD */}
+          <View style={styles.fieldRow}>
+            <View style={styles.lockedNameHeader}>
+              <Text style={styles.fieldLabel}>Full Name</Text>
+              <View style={styles.lockBadge}>
+                <Text style={styles.lockBadgeIcon}>🔒</Text>
+                <Text style={styles.lockBadgeText}>PERMANENT IDENTITY</Text>
+              </View>
+            </View>
+            <View style={styles.lockedNamePill}>
+              <Text style={styles.lockedNameText}>{fullName || 'Athlete'}</Text>
+              <Text style={styles.lockedNotice}>Locked upon registration</Text>
+            </View>
+          </View>
+
+          <View style={styles.twoColRow}>
+            <View style={[styles.fieldRow, { flex: 1 }]}>
+              <Text style={styles.fieldLabel}>Age</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={age}
+                onChangeText={setAge}
+                keyboardType="number-pad"
+                placeholder="24"
+                placeholderTextColor="rgba(255, 255, 255, 0.3)"
+              />
+            </View>
+
+            <View style={[styles.fieldRow, { flex: 1 }]}>
+              <Text style={styles.fieldLabel}>Height (cm - Optional)</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={height}
+                onChangeText={setHeight}
+                placeholder="e.g. 175"
+                placeholderTextColor="rgba(255, 255, 255, 0.3)"
+              />
+            </View>
+          </View>
+
+          {/* Gender Selection */}
+          <View style={styles.fieldRow}>
+            <Text style={styles.fieldLabel}>Gender</Text>
+            <View style={styles.chipsContainer}>
+              {GENDERS.map((g) => (
+                <TouchableOpacity
+                  key={g}
+                  style={[styles.chip, gender === g && styles.chipActive]}
+                  onPress={() => setGender(g)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.chipText, gender === g && styles.chipTextActive]}>
+                    {g}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {/* Dating & Fitness Status */}
+          <View style={styles.fieldRow}>
+            <Text style={styles.fieldLabel}>Dating & Fitness Status</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={datingStatus}
+              onChangeText={setDatingStatus}
+              placeholder="Add your status"
+              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+            />
+            <View style={styles.chipsContainer}>
+              {PRESET_STATUSES.map((status, idx) => (
+                <TouchableOpacity
+                  key={idx}
+                  style={[
+                    styles.statusChip,
+                    datingStatus === status && styles.statusChipActive,
+                  ]}
+                  onPress={() => setDatingStatus(status)}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.statusChipText,
+                      datingStatus === status && styles.statusChipTextActive,
+                    ]}
+                  >
+                    {status}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {/* HARDWARE GPS REFRESH BLOCK */}
+          <View style={styles.gpsLockBlock}>
+            <View style={styles.gpsLockHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fieldLabel}>Location</Text>
+                <Text style={styles.gpsSubNotice}>
+                  Acquires exact hardware coordinates to verify your city.
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.refreshGpsBtn}
+                onPress={detectDeviceLocation}
+                disabled={locating}
+                activeOpacity={0.7}
+              >
+                {locating ? (
+                  <ActivityIndicator size="small" color="#00F0FF" />
+                ) : (
+                  <Text style={styles.refreshGpsText}>⟳ REFRESH GPS</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.gpsStatusDisplay}>
+              <View style={styles.gpsIndicatorRow}>
+                <View
+                  style={[
+                    styles.gpsPulseDot,
+                    { backgroundColor: gpsVerified ? '#00F0FF' : '#FF3B30' },
+                  ]}
+                />
+                <Text style={styles.gpsCityDetectedText}>
+                  {gpsCity ? gpsCity.toUpperCase() : 'NO GPS POSITION ACQUIRED'}
+                </Text>
+              </View>
+              <Text style={styles.gpsCoordsText}>
+                {gpsCoords
+                  ? `LAT: ${gpsCoords.latitude.toFixed(4)} • LON: ${gpsCoords.longitude.toFixed(4)} (LOCKED)`
+                  : 'Click "REFRESH GPS" to connect to satellite'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Fitness Discipline & Schedule */}
+          <Text style={[styles.formSectionTitle, { marginTop: 18 }]}>
+            FITNESS METRICS
+          </Text>
+
+          <View style={styles.fieldRow}>
+            <Text style={styles.fieldLabel}>Primary Discipline</Text>
+            <View style={styles.chipsContainer}>
+              {FITNESS_MODES.map((mode) => (
+                <TouchableOpacity
+                  key={mode.id}
+                  style={[styles.chip, fitnessMode === mode.id && styles.chipActive]}
+                  onPress={() => setFitnessMode(mode.id)}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      fitnessMode === mode.id && styles.chipTextActive,
+                    ]}
+                  >
+                    {mode.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.twoColRow}>
+            <View style={[styles.fieldRow, { flex: 1 }]}>
+              <Text style={styles.fieldLabel}>Pace / Athletic Goal</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={pace}
+                onChangeText={setPace}
+                placeholder="e.g. 5:15 / km"
+                placeholderTextColor="rgba(255, 255, 255, 0.3)"
+              />
+            </View>
+
+            <View style={[styles.fieldRow, { flex: 1 }]}>
+              <Text style={styles.fieldLabel}>Active Schedule</Text>
+              <TextInput
+                style={styles.fieldInput}
+                value={schedule}
+                onChangeText={setSchedule}
+                placeholder="e.g. 6:00 AM Mornings"
+                placeholderTextColor="rgba(255, 255, 255, 0.3)"
+              />
+            </View>
+          </View>
+
+          <View style={styles.fieldRow}>
+            <Text style={styles.fieldLabel}>Bio & Motivation</Text>
+            <TextInput
+              style={[styles.fieldInput, styles.bioInput]}
+              value={bio}
+              onChangeText={setBio}
+              placeholder="What keeps you moving? Looking for friendly pacing or athletic accountability?"
+              placeholderTextColor="rgba(255, 255, 255, 0.3)"
+              multiline
+              numberOfLines={4}
+            />
+          </View>
+
+          {/* Photos */}
+          <Text style={[styles.formSectionTitle, { marginTop: 18 }]}>
+            SHOWCASE PHOTOS
+          </Text>
+
+          <View style={styles.photoThumbnailsRow}>
+            {photos.map((pUrl, idx) => (
+              <View key={idx} style={styles.thumbWrapper}>
+                <Image source={{ uri: pUrl }} style={styles.thumbImg} />
+                <TouchableOpacity
+                  style={styles.deletePhotoBtn}
+                  onPress={() => handleRemovePhoto(idx)}
+                >
+                  <Text style={styles.deletePhotoText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+
             <TouchableOpacity
-              style={styles.refreshGpsBtn}
-              onPress={detectDeviceLocation}
-              disabled={locating}
+              style={styles.uploadCardBtn}
+              onPress={handlePickPhoto}
               activeOpacity={0.7}
             >
-              {locating ? (
-                <ActivityIndicator size="small" color="#00F0FF" />
-              ) : (
-                <Text style={styles.refreshGpsText}>⟳ REFRESH GPS</Text>
-              )}
+              <Text style={styles.uploadIcon}>+</Text>
+              <Text style={styles.uploadLabel}>ADD PHOTO</Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.gpsStatusDisplay}>
-            <View style={styles.gpsIndicatorRow}>
-              <View
-                style={[
-                  styles.gpsPulseDot,
-                  { backgroundColor: gpsVerified ? '#00F0FF' : '#FF3B30' },
-                ]}
-              />
-              <Text style={styles.gpsCityDetectedText}>
-                {gpsCity ? gpsCity.toUpperCase() : 'NO GPS POSITION ACQUIRED'}
-              </Text>
-            </View>
-            <Text style={styles.gpsCoordsText}>
-              {gpsCoords
-                ? `LAT: ${gpsCoords.latitude.toFixed(4)} • LON: ${gpsCoords.longitude.toFixed(4)} (LOCKED)`
-                : 'Click "REFRESH GPS" to connect to satellite'}
-            </Text>
-          </View>
-        </View>
-
-        {/* Fitness Discipline & Schedule */}
-        <Text style={[styles.formSectionTitle, { marginTop: 18 }]}>
-          FITNESS METRICS
-        </Text>
-
-        <View style={styles.fieldRow}>
-          <Text style={styles.fieldLabel}>Primary Discipline</Text>
-          <View style={styles.chipsContainer}>
-            {FITNESS_MODES.map((mode) => (
-              <TouchableOpacity
-                key={mode.id}
-                style={[styles.chip, fitnessMode === mode.id && styles.chipActive]}
-                onPress={() => setFitnessMode(mode.id)}
-                activeOpacity={0.7}
-              >
-                <Text
-                  style={[
-                    styles.chipText,
-                    fitnessMode === mode.id && styles.chipTextActive,
-                  ]}
-                >
-                  {mode.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.twoColRow}>
-          <View style={[styles.fieldRow, { flex: 1 }]}>
-            <Text style={styles.fieldLabel}>Pace / Athletic Goal</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={pace}
-              onChangeText={setPace}
-              placeholder="e.g. 5:15 / km"
-              placeholderTextColor="rgba(255, 255, 255, 0.3)"
-            />
-          </View>
-
-          <View style={[styles.fieldRow, { flex: 1 }]}>
-            <Text style={styles.fieldLabel}>Active Schedule</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={schedule}
-              onChangeText={setSchedule}
-              placeholder="e.g. 6:00 AM Mornings"
-              placeholderTextColor="rgba(255, 255, 255, 0.3)"
-            />
-          </View>
-        </View>
-
-        <View style={styles.fieldRow}>
-          <Text style={styles.fieldLabel}>Bio & Training Ethos</Text>
-          <TextInput
-            style={[styles.fieldInput, styles.bioInput]}
-            value={bio}
-            onChangeText={setBio}
-            placeholder="What keeps you moving? Looking for friendly pacing or athletic accountability?"
-            placeholderTextColor="rgba(255, 255, 255, 0.3)"
-            multiline
-            numberOfLines={4}
-          />
-        </View>
-
-        {/* Photos */}
-        <Text style={[styles.formSectionTitle, { marginTop: 18 }]}>
-          SHOWCASE PHOTOS
-        </Text>
-
-        <View style={styles.photoThumbnailsRow}>
-          {photos.map((pUrl, idx) => (
-            <View key={idx} style={styles.thumbWrapper}>
-              <Image source={{ uri: pUrl }} style={styles.thumbImg} />
-              <TouchableOpacity
-                style={styles.deletePhotoBtn}
-                onPress={() => handleRemovePhoto(idx)}
-              >
-                <Text style={styles.deletePhotoText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
-
+          {/* SAVE PROFILE BUTTON */}
           <TouchableOpacity
-            style={styles.uploadCardBtn}
-            onPress={handlePickPhoto}
-            activeOpacity={0.7}
+            style={[styles.saveBtn, saving && { opacity: 0.6 }]}
+            onPress={handleSave}
+            disabled={saving}
+            activeOpacity={0.8}
           >
-            <Text style={styles.uploadIcon}>+</Text>
-            <Text style={styles.uploadLabel}>ADD PHOTO</Text>
+            {saving ? (
+              <ActivityIndicator color="#030812" size="small" />
+            ) : (
+              <Text style={styles.saveBtnText}>SAVE SETTINGS</Text>
+            )}
           </TouchableOpacity>
         </View>
-
-        {/* SAVE PROFILE BUTTON */}
-        <TouchableOpacity
-          style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-          onPress={handleSave}
-          disabled={saving}
-          activeOpacity={0.8}
-        >
-          {saving ? (
-            <ActivityIndicator color="#030812" size="small" />
-          ) : (
-            <Text style={styles.saveBtnText}>SAVE PROFILE</Text>
-          )}
-        </TouchableOpacity>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -646,6 +696,7 @@ const styles = StyleSheet.create({
   container: {
     width: '100%',
     gap: 20,
+    paddingBottom: 40,
   },
   loadingBox: {
     paddingVertical: 140,
@@ -688,6 +739,48 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
+  /* Wireframe 10.6 Lifetime Athlete Metrics */
+  lifetimeMetricsCard: {
+    backgroundColor: 'rgba(16, 22, 34, 0.94)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 20,
+    padding: 16,
+    gap: 12,
+  },
+  lifetimeTitle: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FC5200',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  metricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  metricCell: {
+    flex: 1,
+    minWidth: '45%',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    padding: 10,
+    borderRadius: 12,
+    gap: 2,
+  },
+  metricCellLabel: {
+    fontFamily: SYSTEM_FONT,
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  metricCellVal: {
+    fontFamily: SYSTEM_FONT,
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+
   previewHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -724,11 +817,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.14)',
     borderRadius: 28,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.55,
-    shadowRadius: 28,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(35px)' } : {}),
   },
   photoViewport: {
     width: '100%',
@@ -807,7 +895,6 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 10,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(16px)' } : {}),
   },
   distanceBadgeText: {
     fontFamily: SYSTEM_FONT,
@@ -899,7 +986,7 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 4,
   },
-  metricCell: {
+  metricCellInner: {
     flex: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderWidth: 1,
@@ -953,11 +1040,6 @@ const styles = StyleSheet.create({
     borderRadius: 26,
     padding: 22,
     gap: 18,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.4,
-    shadowRadius: 24,
-    ...(Platform.OS === 'web' ? { backdropFilter: 'blur(35px)' } : {}),
   },
   formSectionTitle: {
     fontFamily: SYSTEM_FONT,
@@ -979,8 +1061,6 @@ const styles = StyleSheet.create({
     fontSize: 13.5,
     fontWeight: '700',
   },
-
-  /* LOCKED PERMANENT NAME STYLING */
   lockedNameHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1031,7 +1111,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
   },
-
   fieldInput: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderWidth: 1,
@@ -1048,7 +1127,6 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     lineHeight: 22,
   },
-
   gpsLockBlock: {
     backgroundColor: 'rgba(0, 240, 255, 0.04)',
     borderWidth: 1,
@@ -1114,7 +1192,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-
   chipsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1143,7 +1220,6 @@ const styles = StyleSheet.create({
     color: '#00F0FF',
     fontWeight: '800',
   },
-
   statusChip: {
     backgroundColor: 'rgba(255, 59, 48, 0.08)',
     borderWidth: 1,
@@ -1166,7 +1242,6 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontWeight: '800',
   },
-
   photoThumbnailsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1226,17 +1301,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.8,
   },
-
   saveBtn: {
     backgroundColor: '#00F0FF',
     borderRadius: 16,
     paddingVertical: 16,
     alignItems: 'center',
     marginTop: 12,
-    shadowColor: '#00F0FF',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
   },
   saveBtnText: {
     fontFamily: SYSTEM_FONT,

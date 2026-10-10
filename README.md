@@ -1,6 +1,8 @@
 <div align="center">
 
-<img width="100%" src="https://capsule-render.vercel.app/api?type=venom&color=0:11998e,100:38ef7d&height=240&section=header&text=LAPLABAN&fontSize=72&fontColor=ffffff&fontAlignY=40&desc=Community%20Fitness%20%26%20Activity%20Tracker&descAlignY=62&descSize=20&animation=twinkling" alt="LAPLABAN banner" />
+<img src="./assets/logo.png" alt="LAPLABAN logo" width="640" />
+
+<br/>
 
 <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=20&duration=2800&pause=900&color=11998E&center=true&vCenter=true&width=720&height=50&lines=Track+every+kilometer+%F0%9F%8F%83;Find+verified+workout+partners+nearby+%F0%9F%93%8D;Build+healthier+communities%2C+together+%F0%9F%87%B5%F0%9F%87%AD" alt="Typing animation" />
 

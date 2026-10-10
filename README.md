@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./assets/logo.png" alt="LAPLABAN logo" width="640" />
+<img src="./assets/logo.png" alt="LAPLABAN logo" width="200" />
 
 <br/>
 
